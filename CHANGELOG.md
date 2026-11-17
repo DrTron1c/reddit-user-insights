@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.2.0...v1.3.0) (2026-11-17)
+
+### ✨ New Features
+
+* Pills right after the name in comments, full subreddit names ([1c1ba19](https://github.com/DrTron1c/reddit-user-insights/commit/1c1ba190e9f7578913ba48943cd9db536d801bda))
+
 ## [1.2.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.1.0...v1.2.0) (2026-11-17)
 
 ### ✨ New Features
