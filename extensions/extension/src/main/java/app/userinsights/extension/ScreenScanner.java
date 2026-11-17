@@ -14,8 +14,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Finds usernames and the "hidden profile" message on a Reddit screen by reading its
- * accessibility tree. This does not depend on Reddit's (obfuscated) code, so it keeps working
+ * Finds usernames, profile pages and the "hidden profile" message on a Reddit screen by reading
+ * its accessibility tree. This does not depend on Reddit's (obfuscated) code, so it keeps working
  * across app updates as long as the visible text stays similar.
  */
 final class ScreenScanner {
@@ -23,23 +23,32 @@ final class ScreenScanner {
     private static final int MAX_DUMP_LINES = 500;
 
     private static final String NAME = "([A-Za-z0-9_-]{3,20})";
+    /** Separators Reddit puts between header parts: bullet, middle dot, comma. */
+    private static final String SEP = "[\\u2022\\u00B7,]";
+    private static final String TIME_TOKEN =
+            "(?:\\d+\\s?(?:s|m|h|d|w|mo|y|yr|yrs|min|mins|hr|hrs|sec|secs|day|days|wk|wks)(?:\\s+ago)?|just now)";
+    private static final String TAGS = "(?:OP|MOD|Mod|Admin|ADMIN|Edited|edited)";
 
     /** "u/name" on its own. */
     private static final Pattern U_EXACT = Pattern.compile("^\\s*u/" + NAME + "\\s*$");
-    /** "u/name • 3h" and similar short headers. */
-    private static final Pattern U_LEADING = Pattern.compile("^\\s*u/" + NAME + "\\s*[\\u2022\\u00B7,]");
-    /** "name • 3h" in a single text node. */
-    private static final Pattern NAME_DOT_TIME = Pattern.compile(
-            "^" + NAME + "\\s*[\\u2022\\u00B7,]\\s*(?:[\\u2022\\u00B7]\\s*)?(?:\\d+\\s?(?:s|m|h|d|w|mo|y|yr|min|mins|hr|hrs)\\b|just now)",
+    /** "u/name • 3h" and similar headers. */
+    private static final Pattern U_LEADING = Pattern.compile("^\\s*u/" + NAME + "\\s*" + SEP);
+    /**
+     * "name 4h", "name OP 4h", "name • 4h", "name, 4h, flair".
+     * The time must end the line or be followed by a separator, so a comment body such as
+     * "Waited 3h for this" is not taken for a header.
+     */
+    private static final Pattern NAME_TIME = Pattern.compile(
+            "^" + NAME + "(?:[\\s\\u2022\\u00B7,]+" + TAGS + ")?[\\s\\u2022\\u00B7,]+" + TIME_TOKEN
+                    + "(?=[ \\t]*(?:[\\u2022\\u00B7,\\r\\n]|$))",
             Pattern.CASE_INSENSITIVE);
     /** A bare name candidate. */
     private static final Pattern BARE_NAME = Pattern.compile("^" + NAME + "$");
     /** "3h", "• 3h", "3h ago", "2mo", "just now", "Edited 1h". */
     private static final Pattern TIME = Pattern.compile(
-            "^[\\u2022\\u00B7]?\\s*(?:edited\\s+)?(?:\\d+\\s?(?:s|m|h|d|w|mo|y|yr|yrs|min|mins|hr|hrs|sec|secs|day|days|wk|wks)"
-                    + "(?:\\s+ago)?|just now|now)\\s*$",
-            Pattern.CASE_INSENSITIVE);
-    private static final Pattern DOT = Pattern.compile("^\\s*[\\u2022\\u00B7]\\s*$");
+            "^" + SEP + "?\\s*(?:edited\\s+)?(?:" + TIME_TOKEN + "|now)\\s*$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DOT = Pattern.compile("^\\s*" + SEP + "\\s*$");
+    private static final Pattern TAG = Pattern.compile("^\\s*" + TAGS + "\\s*$");
 
     /** Content descriptions of whole comments/posts (TalkBack labels). */
     private static final Pattern DESC_U = Pattern.compile("(?<![A-Za-z0-9_/-])u/" + NAME + "(?![A-Za-z0-9_-])");
@@ -63,6 +72,10 @@ final class ScreenScanner {
     private static final Pattern NAME_IN_HIDDEN = Pattern.compile(
             "(?:u/)?" + NAME + "\\s+(?:likes\\s+to\\s+keep|keeps|has\\s+hidden|hid|hides)", Pattern.CASE_INSENSITIVE);
 
+    /** Tab labels of a profile page. */
+    private static final Set<String> PROFILE_TABS = new HashSet<>(Arrays.asList(
+            "posts", "comments", "about", "overview"));
+
     private static final Set<String> STOP_WORDS = new HashSet<>(Arrays.asList(
             "reply", "replies", "share", "award", "awards", "vote", "votes", "upvote", "downvote", "join", "joined",
             "follow", "following", "followers", "sort", "best", "top", "new", "hot", "rising", "controversial", "old",
@@ -75,25 +88,40 @@ final class ScreenScanner {
             "avatar", "today", "yesterday", "now", "ago", "deleted", "removed", "unknown", "anonymous", "guest",
             "media", "text", "feed", "default", "card", "compact", "classic", "games", "shop", "premium", "coins",
             "online", "members", "member", "subscribers", "rules", "wiki", "sidebar", "edit", "delete", "send",
-            "post_title", "username", "user", "users", "you", "me", "your", "this", "that", "here", "there", "and"));
+            "username", "user", "users", "you", "me", "your", "this", "that", "here", "there", "and", "the",
+            "just", "level", "contributor", "visitors", "contributions", "achievements"));
 
     static final class Hit {
         final String user;
+        /** Where the name (and the time after it, if found) is on screen. */
         final Rect bounds;
-        /** True when the name came from the label of a whole comment/post, not its own text. */
+        /** True when the name came from a whole comment/post, not a one-line header. */
         final boolean merged;
+        /**
+         * The header text ("name 4h") when the node may be wider than its text,
+         * so the pills can go right after the text instead of after the node.
+         */
+        final String headerText;
+        /** True for the u/name header of a profile page. */
+        boolean profileHeader;
 
-        Hit(String user, Rect bounds, boolean merged) {
+        Hit(String user, Rect bounds, boolean merged, String headerText) {
             this.user = user;
             this.bounds = bounds;
             this.merged = merged;
+            this.headerText = headerText;
         }
     }
 
     static final class Result {
         final List<Hit> hits = new ArrayList<>();
+        /** User of the profile page on screen, hidden or not. */
+        String profileUser;
+        /** Set when the profile hides its activity. */
         String hiddenUser;
         Rect hiddenBounds;
+        /** Bottom of the profile tabs (Posts/Comments/About), or -1. */
+        int profileContentTop = -1;
         String dump;
     }
 
@@ -125,38 +153,46 @@ final class ScreenScanner {
             String text = node.text;
 
             if (text != null && text.length() <= 400) {
-                // Long text is a whole comment/post merged into one node (name at the start).
                 boolean tall = node.bounds.height() > maxRowHeight;
                 boolean shortText = text.length() <= 60;
 
                 // u/name on its own, or at the start of a header such as "u/name • 3h".
                 Matcher m = U_EXACT.matcher(text);
-                if (!m.find()) {
+                boolean exact = m.find();
+                if (!exact) {
                     m = U_LEADING.matcher(text);
                     if (!m.find() || (tall && shortText)) {
                         m = null;
                     }
                 }
                 if (m != null) {
-                    addHit(result, usedBounds, m.group(1), node.bounds, tall);
+                    Hit hit = addHit(result, usedBounds, m.group(1), node.bounds, tall,
+                            tall ? null : text.trim());
+                    if (hit != null && exact) {
+                        hit.profileHeader = true;
+                    }
                     continue;
                 }
 
-                // name • 3h  /  name, 3h
-                m = NAME_DOT_TIME.matcher(text);
+                // "name 4h", "name OP 4h", "name • 4h", "name, 4h, flair".
+                m = NAME_TIME.matcher(text);
                 if (m.find() && isPlausibleName(m.group(1))) {
-                    addHit(result, usedBounds, m.group(1), node.bounds, tall);
+                    addHit(result, usedBounds, m.group(1), node.bounds, tall && !shortText, m.group(0));
                     continue;
                 }
 
-                // A bare name followed by a time on the same row.
-                if (shortText) {
+                // A bare name followed by the time on the same row, as separate nodes.
+                if (shortText && !tall) {
                     m = BARE_NAME.matcher(text.trim());
-                    if (m.find() && isPlausibleName(m.group(1))
-                            && node.bounds.height() > 0 && !tall
-                            && followedByTime(nodes, i)) {
-                        addHit(result, usedBounds, m.group(1), node.bounds, false);
-                        continue;
+                    if (m.find() && isPlausibleName(m.group(1)) && node.bounds.height() > 0) {
+                        int timeIndex = followingTime(nodes, i);
+                        if (timeIndex >= 0) {
+                            // Put the pills after the time, not between the name and the time.
+                            Rect header = new Rect(node.bounds);
+                            header.union(nodes.get(timeIndex).bounds);
+                            addHit(result, usedBounds, m.group(1), header, false, null);
+                            continue;
+                        }
                     }
                 }
             }
@@ -177,12 +213,13 @@ final class ScreenScanner {
                 }
                 if (user != null) {
                     boolean merged = node.bounds.height() > maxRowHeight;
-                    addHit(result, usedBounds, user, node.bounds, merged);
+                    addHit(result, usedBounds, user, node.bounds, merged, null);
                 }
             }
         }
 
         removeMergedDuplicates(result.hits);
+        findProfile(nodes, result);
         findHiddenProfile(nodes, result);
         return result;
     }
@@ -196,13 +233,11 @@ final class ScreenScanner {
             return false;
         }
         // All digits, or a time like "12h", is not a name.
-        if (lower.matches("\\d+") || lower.matches("\\d+(s|m|h|d|w|mo|y|yr|k)")) {
-            return false;
-        }
-        return true;
+        return !lower.matches("\\d+") && !lower.matches("\\d+(s|m|h|d|w|mo|y|yr|k)");
     }
 
-    private static boolean followedByTime(List<Node> nodes, int index) {
+    /** Index of the time node that follows a name on the same row, or -1. */
+    private static int followingTime(List<Node> nodes, int index) {
         Node name = nodes.get(index);
         int checked = 0;
         for (int j = index + 1; j < nodes.size() && checked < 5; j++) {
@@ -213,19 +248,18 @@ final class ScreenScanner {
             }
             checked++;
             if (!sameRow(name.bounds, next.bounds)) {
-                return false;
+                return -1;
             }
             String trimmed = text.trim();
             if (TIME.matcher(trimmed).matches()) {
-                return true;
+                return j;
             }
-            if (DOT.matcher(trimmed).matches() || trimmed.equalsIgnoreCase("OP")
-                    || trimmed.equalsIgnoreCase("MOD") || trimmed.equalsIgnoreCase("Admin")) {
+            if (DOT.matcher(trimmed).matches() || TAG.matcher(trimmed).matches()) {
                 continue;
             }
-            // Flair or other text between the name and the time: keep looking a little.
+            // Flair or another label between the name and the time: keep looking a little.
         }
-        return false;
+        return -1;
     }
 
     private static boolean sameRow(Rect a, Rect b) {
@@ -236,15 +270,17 @@ final class ScreenScanner {
         return Math.abs(a.centerY() - b.centerY()) <= tolerance;
     }
 
-    private static void addHit(Result result, Set<String> usedBounds, String user, Rect bounds, boolean merged) {
+    private static Hit addHit(Result result, Set<String> usedBounds, String user, Rect bounds,
+                              boolean merged, String headerText) {
         if (bounds.width() <= 0 || bounds.height() <= 0) {
-            return;
+            return null;
         }
-        String key = bounds.flattenToString();
-        if (!usedBounds.add(key)) {
-            return;
+        if (!usedBounds.add(bounds.flattenToString())) {
+            return null;
         }
-        result.hits.add(new Hit(user, new Rect(bounds), merged));
+        Hit hit = new Hit(user, new Rect(bounds), merged, headerText);
+        result.hits.add(hit);
+        return hit;
     }
 
     /** Drops a whole-comment hit when the same name was also found as its own text inside it. */
@@ -265,6 +301,35 @@ final class ScreenScanner {
         hits.removeAll(remove);
     }
 
+    /** A profile page shows "u/name" and tabs such as Posts and Comments. */
+    private static void findProfile(List<Node> nodes, Result result) {
+        Hit header = null;
+        for (Hit hit : result.hits) {
+            if (hit.profileHeader && (header == null || hit.bounds.top < header.bounds.top)) {
+                header = hit;
+            }
+        }
+        int tabs = 0;
+        int tabsBottom = -1;
+        for (Node node : nodes) {
+            String text = node.text != null ? node.text : node.desc;
+            if (text == null || text.length() > 20) {
+                continue;
+            }
+            String lower = text.trim().toLowerCase(Locale.ROOT);
+            if (PROFILE_TABS.contains(lower)) {
+                tabs++;
+                tabsBottom = Math.max(tabsBottom, node.bounds.bottom);
+            }
+        }
+        if (tabs >= 2) {
+            result.profileContentTop = tabsBottom;
+            if (header != null) {
+                result.profileUser = header.user;
+            }
+        }
+    }
+
     private static void findHiddenProfile(List<Node> nodes, Result result) {
         for (int i = 0; i < nodes.size(); i++) {
             Node node = nodes.get(i);
@@ -277,6 +342,9 @@ final class ScreenScanner {
             Matcher inMessage = NAME_IN_HIDDEN.matcher(text);
             if (inMessage.find() && isPlausibleName(inMessage.group(1))) {
                 user = inMessage.group(1);
+            }
+            if (user == null) {
+                user = result.profileUser;
             }
             if (user == null) {
                 // The profile header usually shows u/name near the top.
@@ -307,6 +375,9 @@ final class ScreenScanner {
             if (user != null) {
                 result.hiddenUser = user;
                 result.hiddenBounds = new Rect(node.bounds);
+                if (result.profileUser == null) {
+                    result.profileUser = user;
+                }
                 return;
             }
         }

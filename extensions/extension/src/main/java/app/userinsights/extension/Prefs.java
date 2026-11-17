@@ -11,6 +11,7 @@ final class Prefs {
 
     private static final String KEY_BADGES = "badges_enabled";
     private static final String KEY_HIDDEN_BUTTON = "hidden_button_enabled";
+    private static final String KEY_INLINE_HIDDEN = "inline_hidden_enabled";
     private static final String KEY_BADGE_COUNT = "badge_count";
     private static final String KEY_TIME_WINDOW = "time_window";
     private static final String KEY_PROMPT_DISMISSED = "prompt_dismissed";
@@ -63,6 +64,15 @@ final class Prefs {
 
     static void setHiddenButtonEnabled(boolean value) {
         putBoolean(KEY_HIDDEN_BUTTON, value);
+    }
+
+    /** Show hidden activity right inside the profile page, instead of a button. */
+    static boolean inlineHiddenEnabled() {
+        return getBoolean(KEY_INLINE_HIDDEN, true);
+    }
+
+    static void setInlineHiddenEnabled(boolean value) {
+        putBoolean(KEY_INLINE_HIDDEN, value);
     }
 
     static int badgeCount() {

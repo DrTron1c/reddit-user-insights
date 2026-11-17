@@ -116,8 +116,12 @@ public class SettingsActivity extends Activity {
         // Hidden profiles.
         LinearLayout hiddenCard = card();
         hiddenCard.addView(heading("Hidden profiles"));
-        hiddenCard.addView(toggle("Show a button on hidden profiles", Prefs.hiddenButtonEnabled(),
+        hiddenCard.addView(toggle("Unhide profiles", Prefs.hiddenButtonEnabled(),
                 (b, checked) -> Prefs.setHiddenButtonEnabled(checked)));
+        hiddenCard.addView(toggle("Show hidden activity inside the profile", Prefs.inlineHiddenEnabled(),
+                (b, checked) -> Prefs.setInlineHiddenEnabled(checked)));
+        hiddenCard.addView(dim("When off, hidden profiles show a button instead. Every profile also gets a "
+                + "'Full history' pill, for users who only hide some communities."));
         hiddenCard.addView(label("Look up any user"));
         final EditText input = new EditText(this);
         input.setHint("username");
@@ -168,6 +172,8 @@ public class SettingsActivity extends Activity {
         otherCard.addView(dim("For fixing badges that don't show up: paste the copied text to whoever is fixing the patch."));
         root.addView(otherCard);
 
+        root.addView(dim("The Reddit settings entry uses code from Morphe Patches "
+                + "(github.com/MorpheApp/morphe-patches), GPLv3."));
         root.addView(dim("Data: Arctic Shift by Arthur Heitmann (arctic-shift.photon-reddit.com). "
                 + "The archive can be incomplete or a few hours behind, and it can't show content that was deleted before it was archived."));
         return scroll;

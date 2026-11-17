@@ -5,6 +5,7 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.text.TextPaint;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -14,20 +15,24 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
- * Draws the subreddit pills and the hidden-profile button on top of the Reddit activity.
- * The views live in a transparent layer added to the activity's window, so touches outside
- * the pills go straight through to Reddit.
+ * Draws the subreddit pills, the hidden-profile view and the hidden-profile button on top of the
+ * Reddit activity. The views live in a transparent layer added to the activity's window, so touches
+ * outside them go straight through to Reddit.
  */
 final class OverlayManager {
     private static final String LAYER_TAG = "user_insights_layer";
     private static final String HIDDEN_BUTTON_TAG = "user_insights_hidden_button";
+    private static final String INLINE_TAG = "user_insights_inline";
+    private static final String ROW_TAG_PREFIX = "user_insights_row:";
     private static final int MAX_ROWS = 30;
 
     /** Border/text colours of the 1st, 2nd and 3rd pill. */
     static final int[] PILL_COLORS = {0xFFE8834A, 0xFFA77BF3, 0xFFE0709A};
+    private static final int FULL_HISTORY_COLOR = 0xFF9A9DA3;
     private static final int PILL_FILL = 0xE60E0F12;
 
     private OverlayManager() {
@@ -51,7 +56,7 @@ final class OverlayManager {
         layer.setClickable(false);
         layer.setFocusable(false);
         layer.setClipChildren(false);
-        // Keep the pills out of the accessibility tree, so they are not scanned or read out.
+        // Keep these views out of the accessibility tree, so they are not scanned or read out.
         layer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         layer.setElevation(Ui.dp(activity, 24));
         layer.setTranslationZ(Ui.dp(activity, 24));
@@ -60,7 +65,7 @@ final class OverlayManager {
         return layer;
     }
 
-    /** Hides the pills while the screen scrolls, so they never point at the wrong comment. */
+    /** Hides everything while the screen scrolls, so pills never point at the wrong comment. */
     static void hideTemporarily(Activity activity) {
         FrameLayout layer = layer(activity, false);
         if (layer != null) {
@@ -81,7 +86,11 @@ final class OverlayManager {
 
     static void remove(Activity activity) {
         FrameLayout layer = layer(activity, false);
-        if (layer != null && layer.getParent() instanceof ViewGroup) {
+        if (layer == null) {
+            return;
+        }
+        releaseInline(layer);
+        if (layer.getParent() instanceof ViewGroup) {
             ((ViewGroup) layer.getParent()).removeView(layer);
         }
     }
@@ -101,60 +110,107 @@ final class OverlayManager {
             return;
         }
 
-        int used = 0;
-        if (Prefs.badgesEnabled()) {
-            int wanted = Prefs.badgeCount();
-            for (ScreenScanner.Hit hit : result.hits) {
-                if (used >= MAX_ROWS) {
-                    break;
-                }
-                List<ArcticShift.SubCount> subs = ArcticShift.cachedTopSubs(hit.user);
-                if (subs == null) {
-                    ArcticShift.requestTopSubs(hit.user);
-                    continue;
-                }
-                if (subs.isEmpty()) {
-                    continue;
-                }
-                Rect local = new Rect(hit.bounds);
-                local.offset(-origin[0], -origin[1]);
-                if (local.bottom <= 0 || local.top >= layerHeight) {
-                    continue;
-                }
-                LinearLayout row = rowAt(layer, used);
-                bindRow(activity, row, hit.user, subs, wanted);
-                if (positionRow(activity, row, local, hit.merged, layerWidth)) {
-                    row.setVisibility(View.VISIBLE);
-                    used++;
-                } else {
-                    row.setVisibility(View.GONE);
-                }
-            }
-        }
-        // Hide unused rows.
-        int rowIndex = 0;
-        for (int i = 0; i < layer.getChildCount(); i++) {
-            View child = layer.getChildAt(i);
-            if (child instanceof LinearLayout && !HIDDEN_BUTTON_TAG.equals(child.getTag())) {
-                if (rowIndex >= used) {
-                    child.setVisibility(View.GONE);
-                }
-                rowIndex++;
-            }
-        }
-
-        renderHiddenButton(activity, layer, result, origin, layerWidth, layerHeight);
+        boolean inlineShown = renderInline(activity, layer, result, origin, layerHeight);
+        renderHiddenButton(activity, layer, result, origin, layerWidth, layerHeight, inlineShown);
+        renderRows(activity, layer, result, origin, layerWidth, layerHeight, inlineShown);
 
         if (layer.getAlpha() < 1f) {
             layer.animate().alpha(1f).setDuration(120).start();
         }
     }
 
+    // Pills.
+
+    private static void renderRows(Activity activity, FrameLayout layer, ScreenScanner.Result result,
+                                   int[] origin, int layerWidth, int layerHeight, boolean inlineShown) {
+        int used = 0;
+        boolean badges = Prefs.badgesEnabled();
+        int wanted = Prefs.badgeCount();
+        int inlineTop = inlineShown ? (int) layer.findViewWithTag(INLINE_TAG).getTranslationY() : Integer.MAX_VALUE;
+
+        for (ScreenScanner.Hit hit : result.hits) {
+            if (used >= MAX_ROWS) {
+                break;
+            }
+            // "Full history" on the u/name header of a profile that is not hidden.
+            boolean fullHistory = hit.profileHeader && result.hiddenUser == null
+                    && hit.user.equalsIgnoreCase(result.profileUser) && Prefs.hiddenButtonEnabled();
+            if (!badges && !fullHistory) {
+                continue;
+            }
+
+            List<ArcticShift.SubCount> subs = Collections.emptyList();
+            if (badges) {
+                List<ArcticShift.SubCount> cached = ArcticShift.cachedTopSubs(hit.user);
+                if (cached == null) {
+                    ArcticShift.requestTopSubs(hit.user);
+                    if (!fullHistory) {
+                        continue;
+                    }
+                } else {
+                    subs = cached;
+                }
+            }
+            if (subs.isEmpty() && !fullHistory) {
+                continue;
+            }
+
+            Rect local = new Rect(hit.bounds);
+            local.offset(-origin[0], -origin[1]);
+            if (local.bottom <= 0 || local.top >= layerHeight || local.top >= inlineTop) {
+                continue;
+            }
+            LinearLayout row = rowAt(layer, used);
+            bindRow(activity, row, hit.user, subs, badges ? wanted : 0, fullHistory);
+            if (positionRow(activity, row, local, anchorRight(activity, hit, local), hit.merged, layerWidth)) {
+                row.setVisibility(View.VISIBLE);
+                used++;
+            } else {
+                row.setVisibility(View.GONE);
+            }
+        }
+
+        // Hide unused rows.
+        int rowIndex = 0;
+        for (int i = 0; i < layer.getChildCount(); i++) {
+            View child = layer.getChildAt(i);
+            if (isRow(child)) {
+                if (rowIndex >= used) {
+                    child.setVisibility(View.GONE);
+                }
+                rowIndex++;
+            }
+        }
+    }
+
+    private static boolean isRow(View view) {
+        Object tag = view.getTag();
+        return tag instanceof String && ((String) tag).startsWith(ROW_TAG_PREFIX);
+    }
+
+    /**
+     * Where the name (and time) text ends. A node can be wider than its text,
+     * such as a whole header row, so measure the text in that case.
+     */
+    private static int anchorRight(Context context, ScreenScanner.Hit hit, Rect local) {
+        if (hit.merged || hit.headerText == null) {
+            return local.right;
+        }
+        TextPaint paint = new TextPaint();
+        paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 14,
+                context.getResources().getDisplayMetrics()));
+        int textWidth = (int) Math.ceil(paint.measureText(hit.headerText.split("\n")[0]));
+        if (local.width() > textWidth + Ui.dp(context, 24)) {
+            return Math.min(local.right, local.left + textWidth);
+        }
+        return local.right;
+    }
+
     private static LinearLayout rowAt(FrameLayout layer, int index) {
         int rowIndex = 0;
         for (int i = 0; i < layer.getChildCount(); i++) {
             View child = layer.getChildAt(i);
-            if (child instanceof LinearLayout && !HIDDEN_BUTTON_TAG.equals(child.getTag())) {
+            if (isRow(child)) {
                 if (rowIndex == index) {
                     return (LinearLayout) child;
                 }
@@ -164,24 +220,22 @@ final class OverlayManager {
         LinearLayout row = new LinearLayout(layer.getContext());
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setTag(ROW_TAG_PREFIX);
         layer.addView(row, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return row;
     }
 
     private static void bindRow(final Activity activity, LinearLayout row, final String user,
-                                List<ArcticShift.SubCount> subs, int wanted) {
+                                List<ArcticShift.SubCount> subs, int wanted, boolean fullHistory) {
         int count = Math.min(wanted, subs.size());
-        StringBuilder signature = new StringBuilder(user).append('|');
+        StringBuilder signature = new StringBuilder(ROW_TAG_PREFIX).append(user).append('|');
         for (int i = 0; i < count; i++) {
             signature.append(subs.get(i).subreddit).append(':').append(subs.get(i).count).append(',');
         }
+        signature.append(fullHistory);
         String key = signature.toString();
         if (key.equals(row.getTag())) {
-            // Same content; just make all pills visible again before measuring.
-            for (int i = 0; i < row.getChildCount(); i++) {
-                row.getChildAt(i).setVisibility(View.VISIBLE);
-            }
             return;
         }
         row.setTag(key);
@@ -197,13 +251,24 @@ final class OverlayManager {
                 UserInsights.openSettings(activity);
                 return true;
             });
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            if (i > 0) {
-                params.leftMargin = gap;
-            }
-            row.addView(pill, params);
+            addPill(row, pill, i > 0 ? gap : 0);
         }
+        if (fullHistory) {
+            TextView pill = pill(activity, "Full history ›", FULL_HISTORY_COLOR);
+            pill.setOnClickListener(v -> UserInsights.openArchive(activity, user, null));
+            pill.setOnLongClickListener(v -> {
+                UserInsights.openSettings(activity);
+                return true;
+            });
+            addPill(row, pill, count > 0 ? gap : 0);
+        }
+    }
+
+    private static void addPill(LinearLayout row, TextView pill, int leftMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.leftMargin = leftMargin;
+        row.addView(pill, params);
     }
 
     static TextView pill(Context context, String text, int color) {
@@ -228,23 +293,19 @@ final class OverlayManager {
     }
 
     /**
-     * Places a row after the name, dropping pills that do not fit.
+     * Places a row on the name's line, right after the name and time, dropping pills that do not fit.
      *
      * @return false if not even one pill fits.
      */
-    private static boolean positionRow(Context context, LinearLayout row, Rect name, boolean merged,
-                                       int layerWidth) {
+    private static boolean positionRow(Context context, LinearLayout row, Rect name, int anchorRight,
+                                       boolean merged, int layerWidth) {
         int margin = Ui.dp(context, 8);
-        int gap = Ui.dp(context, 6);
+        int gap = Ui.dp(context, 8);
         int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
-
-        row.measure(unspecified, unspecified);
-        int height = row.getMeasuredHeight();
 
         if (merged) {
             // The name is somewhere inside a whole comment; put the pills in its top-right corner.
-            int available = name.width() - 2 * margin;
-            if (!fitPills(row, available)) {
+            if (!fitPills(row, name.width() - 2 * margin)) {
                 return false;
             }
             row.measure(unspecified, unspecified);
@@ -253,21 +314,20 @@ final class OverlayManager {
             return true;
         }
 
-        int y = name.centerY() - height / 2;
-        int x = name.right + gap;
-        int available = layerWidth - margin - x;
-        if (fitPills(row, available)) {
+        // Centre on the first line of the name, even if the node also covers a flair line below it.
+        int lineHeight = Math.min(name.height(), Ui.dp(context, 28));
+        int x = anchorRight + gap;
+        if (fitPills(row, layerWidth - margin - x)) {
             row.measure(unspecified, unspecified);
             row.setTranslationX(x);
-            row.setTranslationY(y);
+            row.setTranslationY(name.top + (lineHeight - row.getMeasuredHeight()) / 2f);
             return true;
         }
-        // Not enough room after the name: show them just below it.
-        row.measure(unspecified, unspecified);
-        available = layerWidth - margin - name.left;
-        if (!fitPills(row, available)) {
+        // No room on the line at all: just below the name.
+        if (!fitPills(row, layerWidth - margin - name.left)) {
             return false;
         }
+        row.measure(unspecified, unspecified);
         row.setTranslationX(name.left);
         row.setTranslationY(name.bottom + Ui.dp(context, 2));
         return true;
@@ -275,13 +335,10 @@ final class OverlayManager {
 
     /** Hides pills from the end until the row fits; false if none fits. */
     private static boolean fitPills(LinearLayout row, int available) {
-        if (available <= 0) {
+        if (available <= 0 || row.getChildCount() == 0) {
             return false;
         }
         int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
-        for (int i = 0; i < row.getChildCount(); i++) {
-            row.getChildAt(i).setVisibility(View.VISIBLE);
-        }
         for (int visible = row.getChildCount(); visible >= 1; visible--) {
             for (int i = 0; i < row.getChildCount(); i++) {
                 row.getChildAt(i).setVisibility(i < visible ? View.VISIBLE : View.GONE);
@@ -294,10 +351,86 @@ final class OverlayManager {
         return false;
     }
 
+    // Hidden profiles.
+
+    /**
+     * Shows the archived activity right inside a hidden profile, under its tabs.
+     *
+     * @return true if shown.
+     */
+    private static boolean renderInline(Activity activity, FrameLayout layer, ScreenScanner.Result result,
+                                        int[] origin, int layerHeight) {
+        View existing = layer.findViewWithTag(INLINE_TAG);
+        if (!Prefs.hiddenButtonEnabled() || !Prefs.inlineHiddenEnabled()
+                || result.hiddenUser == null || result.hiddenBounds == null) {
+            if (existing != null) {
+                existing.setVisibility(View.GONE);
+            }
+            return false;
+        }
+
+        Rect message = new Rect(result.hiddenBounds);
+        message.offset(-origin[0], -origin[1]);
+        int top;
+        if (result.profileContentTop > 0 && result.profileContentTop - origin[1] < message.top) {
+            top = result.profileContentTop - origin[1];
+        } else {
+            // No tabs found: start a little above the message, which usually has a picture above it.
+            top = message.top - Ui.dp(activity, 140);
+        }
+        top = Math.max(top, Ui.dp(activity, 80));
+        int height = layerHeight - top;
+        if (height < Ui.dp(activity, 220)) {
+            if (existing != null) {
+                existing.setVisibility(View.GONE);
+            }
+            return false;
+        }
+
+        FrameLayout panel;
+        if (existing instanceof FrameLayout) {
+            panel = (FrameLayout) existing;
+            View child = panel.getChildCount() > 0 ? panel.getChildAt(0) : null;
+            if (!(child instanceof ArchiveView) || !((ArchiveView) child).user.equalsIgnoreCase(result.hiddenUser)) {
+                if (child instanceof ArchiveView) {
+                    ((ArchiveView) child).release();
+                }
+                panel.removeAllViews();
+                panel.addView(new ArchiveView(activity, result.hiddenUser, null, true));
+            }
+        } else {
+            panel = new FrameLayout(activity);
+            panel.setTag(INLINE_TAG);
+            panel.setClickable(true);
+            panel.addView(new ArchiveView(activity, result.hiddenUser, null, true));
+            layer.addView(panel, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height));
+        }
+
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) panel.getLayoutParams();
+        if (params.height != height) {
+            params.height = height;
+            panel.setLayoutParams(params);
+        }
+        panel.setTranslationY(top);
+        panel.setVisibility(View.VISIBLE);
+        return true;
+    }
+
+    private static void releaseInline(FrameLayout layer) {
+        View existing = layer.findViewWithTag(INLINE_TAG);
+        if (existing instanceof FrameLayout) {
+            FrameLayout panel = (FrameLayout) existing;
+            if (panel.getChildCount() > 0 && panel.getChildAt(0) instanceof ArchiveView) {
+                ((ArchiveView) panel.getChildAt(0)).release();
+            }
+            layer.removeView(panel);
+        }
+    }
+
     private static void renderHiddenButton(final Activity activity, FrameLayout layer, ScreenScanner.Result result,
-                                           int[] origin, int layerWidth, int layerHeight) {
+                                           int[] origin, int layerWidth, int layerHeight, boolean inlineShown) {
         View existing = layer.findViewWithTag(HIDDEN_BUTTON_TAG);
-        if (!Prefs.hiddenButtonEnabled() || result.hiddenUser == null || result.hiddenBounds == null) {
+        if (inlineShown || !Prefs.hiddenButtonEnabled() || result.hiddenUser == null || result.hiddenBounds == null) {
             if (existing != null) {
                 existing.setVisibility(View.GONE);
             }

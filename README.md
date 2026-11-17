@@ -3,7 +3,8 @@
 A Morphe patch for the Reddit app:
 
 - Shows each user's 3 most active subreddits next to their name.
-- Shows the posts and comments of users who hide their profile.
+- Shows the posts and comments of users who hide their profile, right inside their profile.
+- Adds a User Insights entry to Reddit's settings.
 
 Data comes from the public [Arctic Shift](https://arctic-shift.photon-reddit.com) archive, so some activity may be missing or a few hours old.
 
@@ -11,14 +12,14 @@ Data comes from the public [Arctic Shift](https://arctic-shift.photon-reddit.com
 
 1. In Morphe Manager, add this source:
    `https://morphe.software/add-source?github=DrTron1c/reddit-user-insights`
-2. Patch Reddit with **User insights** turned on.
+2. Patch Reddit with **User insights** and **User insights settings entry** turned on (Expert mode lets you mix them with the Morphe patches).
 3. Open Reddit and turn on **Reddit User Insights** in Accessibility settings. This is only needed once. If the switch is greyed out: App info → ⋮ → Allow restricted settings.
 
 ## Use
 
 - Tap a badge to see that user's posts in that subreddit.
-- On a hidden profile, tap **Show hidden activity**.
-- Long-press a badge, or open the **User Insights** app icon, for settings.
+- Tap **Full history** on any profile to see everything they posted.
+- Settings: Reddit Settings → **User Insights**, long-press a badge, or the **User Insights** app icon.
 
 ## Patches
 
