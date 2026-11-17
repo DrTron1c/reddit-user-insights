@@ -3,7 +3,7 @@ group = "app.userinsights"
 patches {
     about {
         name = "Reddit User Insights"
-        description = "Shows each Reddit user's 3 most active subreddits next to their name, and unhides hidden profile activity using the Arctic Shift archive."
+        description = "Top 3 subreddits next to usernames, and unhidden profiles, for Reddit."
         source = "git@github.com:DrTron1c/reddit-user-insights.git"
         author = "DrTron1c"
         contact = "na"

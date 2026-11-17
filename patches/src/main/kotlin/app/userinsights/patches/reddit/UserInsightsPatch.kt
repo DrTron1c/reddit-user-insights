@@ -117,9 +117,7 @@ private val userInsightsResourcesPatch = patch {
 @Suppress("unused")
 val userInsightsPatch = patch(
     name = "User insights",
-    description = "Shows the 3 subreddits each user is most active in next to their name, " +
-        "and unhides the activity of hidden profiles using the Arctic Shift archive. " +
-        "Turn on the 'Reddit User Insights' accessibility service once after installing.",
+    description = "Shows each user's top 3 subreddits next to their name and unhides hidden profiles.",
     default = true
 ) {
     compatibleWith(COMPATIBILITY_REDDIT)
