@@ -228,6 +228,11 @@ final class OverlayManager {
             if (used >= MAX_ROWS) {
                 break;
             }
+            // Comment headers draw their own pills when that patch is applied; only u/name headers
+            // (profiles, post authors) still get floating ones.
+            if (EmbeddedPills.isActive() && !hit.profileHeader) {
+                continue;
+            }
             // "Full history" on the u/name header of a profile that is not hidden.
             boolean fullHistory = hit.profileHeader && result.hiddenUser == null
                     && hit.user.equalsIgnoreCase(result.profileUser) && Prefs.hiddenButtonEnabled();

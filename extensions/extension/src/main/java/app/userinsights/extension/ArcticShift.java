@@ -216,6 +216,8 @@ final class ArcticShift {
                         memCache.put(key, finalResult);
                         saveToDisk(key, finalResult);
                     }
+                    // Redraw comment headers that show this user (or its loading dots).
+                    EmbeddedPills.onDataChanged();
                     Runnable listener = onDataChanged;
                     if (listener != null) {
                         listener.run();

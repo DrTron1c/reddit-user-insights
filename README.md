@@ -2,7 +2,7 @@
 
 A Morphe patch for the Reddit app:
 
-- Shows each user's 3 most active subreddits next to their name.
+- Shows each user's 3 most active subreddits right after their name in comments, with loading dots while they load.
 - Shows the posts and comments of users who hide their profile, right inside their profile.
 - Adds a User Insights entry to Reddit's settings.
 
@@ -12,7 +12,7 @@ Data comes from the public [Arctic Shift](https://arctic-shift.photon-reddit.com
 
 1. In Morphe Manager, add this source:
    `https://morphe.software/add-source?github=DrTron1c/reddit-user-insights`
-2. Patch Reddit with **User insights** and **User insights settings entry** turned on (Expert mode lets you mix them with the Morphe patches).
+2. Patch Reddit with the **User insights** patches turned on (Expert mode lets you mix them with the Morphe patches).
 3. Open Reddit and turn on **Reddit User Insights** in Accessibility settings. This is only needed once. If the switch is greyed out: App info → ⋮ → Allow restricted settings.
 
 ## Use
@@ -44,6 +44,10 @@ Data comes from the public [Arctic Shift](https://arctic-shift.photon-reddit.com
 </details>
 
 <!-- PATCHES_END -->
+
+## Updates
+
+A daily check patches the newest Reddit. If everything applies, the new version is added and released automatically; if not, an issue is opened.
 
 ## Credits
 
