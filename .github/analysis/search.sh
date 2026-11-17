@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
-# Prints short search results from the decompiled code.
 SRC="$1"
 cd "$SRC" || exit 1
 show() { echo; echo "===== $1"; }
 
-H=com/reddit/postdetail/comment/refactor/header
-show "Header files"
-find "$H" -name "*.java" -printf "%s %p\n" | sort -k2 | head -60
+F=$(grep -rlE '"comment_author"' --include=*.java defpackage | xargs grep -l '"role_indicator"' | head -1)
+show "Author composable file: $F"
+grep -nE "public static final [a-zA-Z0-9_]+ [a-zA-Z0-9_]+\(" "$F" | head -60
+L=$(grep -n '"comment_author"' "$F" | head -1 | cut -d: -f1)
+START=$(awk -v l="$L" 'NR<=l && /public static final void [a-zA-Z0-9_]+\(/ {s=NR} END {print s}' "$F")
+show "Method around comment_author ($START..$L)"
+sed -n "${START},$((L+30))p" "$F" | cut -c1-300
 
-for f in $(find "$H" -name "*.java" | sort | head -40); do
-  show "SIGNATURES $f"
-  grep -nE "^(public |final |static |abstract )*(class|interface|enum) |^\s+(public|private|protected)?\s*(static )?(final )?[A-Za-z0-9_<>\[\], .]+ [A-Za-z0-9_]+\(.*\) ?\{|\"[^\"]{2,}\"" "$f" | cut -c1-260 | head -70
-done
+NAME=$(sed -n "${START}p" "$F" | grep -oE "void [a-zA-Z0-9_]+\(" | sed 's/void //;s/(//')
+CLS=$(basename "$F" .java)
+show "Callers of $CLS.$NAME"
+grep -rn "$CLS\.$NAME(" --include=*.java . | head -10 | cut -c1-300
+C=$(grep -rln "$CLS\.$NAME(" --include=*.java . | grep -v "$F" | head -1)
+if [ -n "$C" ]; then
+  CL=$(grep -n "$CLS\.$NAME(" "$C" | head -1 | cut -d: -f1)
+  show "Caller context $C:$CL"
+  sed -n "$((CL-60)),$((CL+60))p" "$C" | cut -c1-300
+fi
 
-show "comment_author usages"
-grep -rn -B4 -A30 '"comment_author"' --include=*.java . | cut -c1-240 | head -260
+show "comment_age usages"
+grep -rn -B3 -A12 '"comment_age"' --include=*.java defpackage | cut -c1-260 | head -120
 
-show "Comment(authorLine= class"
-f=$(grep -rlE '"Comment\(authorLine=' --include=*.java . | head -1); echo "$f"; head -80 "$f" | cut -c1-220
+show "Text composable"
+T=$(sed -n "$L,$((L+8))p" "$F" | grep -oE "[a-z0-9]+\.b\(str" | head -1 | cut -d. -f1)
+echo "class=$T"
+grep -nE "public static final void b\(" "defpackage/$T.java" | cut -c1-400
 
-show "AuthorHeader class"
-f=$(grep -rlE '"AuthorHeader\(authorAvatarUrl=' --include=*.java . | head -1); echo "$f"; head -60 "$f" | cut -c1-220
+show "Role indicator composable"
+R=$(sed -n "$L,$((L+10))p" "$F" | grep -oE "[a-z0-9]+\.[A-Za-z]+\([^;]*role_indicator" | head -1)
+echo "$R"
+RC=$(echo "$R" | cut -d. -f1); RM=$(echo "$R" | cut -d. -f2 | cut -d'(' -f1)
+grep -nE "public static final void $RM\(" "defpackage/$RC.java" | cut -c1-300
 
-show "Compose state"
-for f in defpackage/bhi0.java defpackage/wfp.java; do echo "--- $f"; grep -nE "class |MutableState\(value=|StructuralEqualityPolicy|public .*\(" "$f" | head -30; done
+show "Header model"
+M=$(grep -rlE '"CommentHeader' --include=*.java defpackage | head -3)
+for m in $M; do echo "--- $m"; grep -nE "public final |return \"" "$m" | head -40 | cut -c1-260; done
+for m in defpackage/v6a.java; do echo "--- $m"; sed -n 1,60p "$m" | cut -c1-200; grep -n 'return "' "$m" | cut -c1-400; done
