@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.0.1...v1.1.0) (2026-11-17)
+
+### ✨ New Features
+
+* Hidden activity inside profiles and a Reddit settings entry ([4dc6680](https://github.com/DrTron1c/reddit-user-insights/commit/4dc6680530c956026398d1c806bb160970f64bc7))
+
 ## [1.0.1](https://github.com/DrTron1c/reddit-user-insights/compare/v1.0.0...v1.0.1) (2026-11-17)
 
 ### 🐛 Bug Fixes
