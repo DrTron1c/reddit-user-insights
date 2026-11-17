@@ -214,7 +214,7 @@ public final class UserInsights {
 
         @Override
         public void onActivityPaused(Activity activity) {
-            OverlayManager.clear(activity);
+            OverlayManager.clearAll();
             if (resumedActivity.get() == activity) {
                 resumedActivity = new WeakReference<>(null);
             }

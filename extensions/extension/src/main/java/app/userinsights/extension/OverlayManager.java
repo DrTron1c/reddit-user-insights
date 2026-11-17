@@ -6,7 +6,6 @@ import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.TextPaint;
-import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -20,8 +19,8 @@ import java.util.List;
 
 /**
  * Draws the subreddit pills, the hidden-profile view and the hidden-profile button on top of the
- * Reddit activity. The views live in a transparent layer added to the activity's window, so touches
- * outside them go straight through to Reddit.
+ * Reddit screen. The views live in a transparent layer added to the window the content is in
+ * (the activity, or a dialog or sheet above it), so touches outside them go straight through to Reddit.
  */
 final class OverlayManager {
     private static final String LAYER_TAG = "user_insights_layer";
@@ -46,48 +45,58 @@ final class OverlayManager {
     private OverlayManager() {
     }
 
-    private static FrameLayout layer(Activity activity, boolean create) {
-        View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-        if (!(decor instanceof ViewGroup)) {
+    /** Windows that have (or had) a layer, so all of them can be cleared. */
+    private static final java.util.WeakHashMap<ViewGroup, Boolean> hosts = new java.util.WeakHashMap<>();
+    private static java.lang.ref.WeakReference<ViewGroup> lastHost = new java.lang.ref.WeakReference<>(null);
+
+    private static FrameLayout layer(ViewGroup host, boolean create) {
+        if (host == null) {
             return null;
         }
-        ViewGroup decorGroup = (ViewGroup) decor;
-        View existing = decorGroup.findViewWithTag(LAYER_TAG);
+        View existing = host.findViewWithTag(LAYER_TAG);
         if (existing instanceof FrameLayout) {
             return (FrameLayout) existing;
         }
         if (!create) {
             return null;
         }
-        FrameLayout layer = new FrameLayout(activity);
+        Context context = host.getContext();
+        FrameLayout layer = new FrameLayout(context);
         layer.setTag(LAYER_TAG);
         layer.setClickable(false);
         layer.setFocusable(false);
         layer.setClipChildren(false);
         // Keep these views out of the accessibility tree, so they are not scanned or read out.
         layer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        layer.setElevation(Ui.dp(activity, 24));
-        layer.setTranslationZ(Ui.dp(activity, 24));
-        decorGroup.addView(layer, new ViewGroup.LayoutParams(
+        layer.setElevation(Ui.dp(context, 24));
+        layer.setTranslationZ(Ui.dp(context, 24));
+        host.addView(layer, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        hosts.put(host, Boolean.TRUE);
         return layer;
     }
 
     /** Hides everything while the screen scrolls, so pills never point at the wrong comment. */
-    static void hideTemporarily(Activity activity) {
-        FrameLayout layer = layer(activity, false);
+    static void hideTemporarily(ViewGroup host) {
+        FrameLayout layer = layer(host, false);
         if (layer != null) {
             layer.animate().cancel();
             layer.setAlpha(0f);
         }
     }
 
+    static void hideAllTemporarily() {
+        for (ViewGroup host : new java.util.ArrayList<>(hosts.keySet())) {
+            hideTemporarily(host);
+        }
+    }
+
     /** Moves the pills (and the hidden-profile button) by dy pixels, following the content while it scrolls. */
-    static void shiftRows(Activity activity, float dy) {
+    static void shiftRows(ViewGroup host, float dy) {
         if (dy == 0f) {
             return;
         }
-        FrameLayout layer = layer(activity, false);
+        FrameLayout layer = layer(host, false);
         if (layer == null) {
             return;
         }
@@ -101,8 +110,8 @@ final class OverlayManager {
     }
 
     /** True if (x, y), in window coordinates, is on one of our visible views. */
-    static boolean isOnOverlay(Activity activity, float x, float y) {
-        FrameLayout layer = layer(activity, false);
+    static boolean isOnOverlay(ViewGroup host, float x, float y) {
+        FrameLayout layer = layer(host, false);
         if (layer == null || layer.getAlpha() == 0f) {
             return false;
         }
@@ -120,8 +129,8 @@ final class OverlayManager {
         return false;
     }
 
-    static void clear(Activity activity) {
-        FrameLayout layer = layer(activity, false);
+    static void clear(ViewGroup host) {
+        FrameLayout layer = layer(host, false);
         if (layer == null) {
             return;
         }
@@ -130,19 +139,53 @@ final class OverlayManager {
         }
     }
 
-    static void remove(Activity activity) {
-        FrameLayout layer = layer(activity, false);
-        if (layer == null) {
-            return;
-        }
-        releaseInline(layer);
-        if (layer.getParent() instanceof ViewGroup) {
-            ((ViewGroup) layer.getParent()).removeView(layer);
+    static void clearAll() {
+        for (ViewGroup host : new java.util.ArrayList<>(hosts.keySet())) {
+            clear(host);
         }
     }
 
-    static void render(Activity activity, ScreenScanner.Result result) {
-        FrameLayout layer = layer(activity, true);
+    /** Removes the layers of an activity that is closing (its own window and its dialogs). */
+    static void remove(Activity activity) {
+        for (ViewGroup host : new java.util.ArrayList<>(hosts.keySet())) {
+            if (host.getContext() != activity && unwrap(host.getContext()) != activity) {
+                continue;
+            }
+            FrameLayout layer = layer(host, false);
+            if (layer != null) {
+                releaseInline(layer);
+                host.removeView(layer);
+            }
+            hosts.remove(host);
+        }
+    }
+
+    private static Context unwrap(Context context) {
+        while (context instanceof android.content.ContextWrapper && !(context instanceof Activity)) {
+            Context base = ((android.content.ContextWrapper) context).getBaseContext();
+            if (base == null || base == context) {
+                break;
+            }
+            context = base;
+        }
+        return context;
+    }
+
+    /**
+     * Draws everything for one scan.
+     *
+     * @param activity For opening screens from the pills.
+     * @param host     Root view of the window the scanned content is in.
+     */
+    static void render(Activity activity, ViewGroup host, ScreenScanner.Result result) {
+        ViewGroup previous = lastHost.get();
+        if (previous != null && previous != host) {
+            // Moved to another window (such as a post opened above the feed): clear the old one.
+            clear(previous);
+        }
+        lastHost = new java.lang.ref.WeakReference<>(host);
+
+        FrameLayout layer = layer(host, true);
         if (layer == null) {
             return;
         }
@@ -212,10 +255,15 @@ final class OverlayManager {
             if (local.bottom <= 0 || local.top >= layerHeight || local.top >= inlineTop) {
                 continue;
             }
+            // Pills stay inside the list the name is in (such as the comments panel of a video).
+            int maxRight = layerWidth;
+            if (hit.container != null) {
+                maxRight = Math.min(layerWidth, hit.container.right - origin[0]);
+            }
             LinearLayout row = rowFor(layer, hit.user);
             boolean wasVisible = row.getVisibility() == View.VISIBLE;
             bindRow(activity, row, hit.user, subs, badges ? wanted : 0, fullHistory, loading);
-            if (positionRow(activity, row, local, anchorRight(activity, hit, local), hit.merged, layerWidth, wasVisible)) {
+            if (positionRow(activity, row, local, anchorRight(activity, hit, local, origin), hit.merged, maxRight, wasVisible)) {
                 row.setVisibility(View.VISIBLE);
                 used++;
             } else {
@@ -239,7 +287,11 @@ final class OverlayManager {
      * Where the name (and time) text ends. A node can be wider than its text,
      * such as a whole header row, so measure the text in that case.
      */
-    private static int anchorRight(Context context, ScreenScanner.Hit hit, Rect local) {
+    private static int anchorRight(Context context, ScreenScanner.Hit hit, Rect local, int[] origin) {
+        if (hit.textRight >= 0) {
+            // Where the text really ends, as reported for the screen.
+            return hit.textRight - origin[0];
+        }
         if (hit.merged || hit.headerText == null) {
             return local.right;
         }
@@ -353,9 +405,8 @@ final class OverlayManager {
         pill.setTextColor(color);
         pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         pill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        // Full subreddit names: pills that do not fit are left out instead of cut short.
         pill.setSingleLine(true);
-        pill.setEllipsize(TextUtils.TruncateAt.END);
-        pill.setMaxWidth(Ui.dp(context, 150));
         int h = Ui.dp(context, 7);
         int v = Ui.dp(context, 2);
         pill.setPadding(h, v, h, v);
@@ -375,31 +426,32 @@ final class OverlayManager {
      * @return false if not even one pill fits.
      */
     private static boolean positionRow(Context context, LinearLayout row, Rect name, int anchorRight,
-                                       boolean merged, int layerWidth, boolean wasVisible) {
+                                       boolean merged, int maxRight, boolean wasVisible) {
         int margin = Ui.dp(context, 8);
         int gap = Ui.dp(context, 8);
         int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
 
         if (merged) {
             // The name is somewhere inside a whole comment; put the pills in its top-right corner.
-            if (!fitPills(row, name.width() - 2 * margin)) {
+            int right = Math.min(name.right, maxRight);
+            if (!fitPills(row, right - name.left - 2 * margin)) {
                 return false;
             }
             row.measure(unspecified, unspecified);
-            moveTo(context, row, name.right - margin - row.getMeasuredWidth(), name.top + Ui.dp(context, 4), wasVisible);
+            moveTo(context, row, right - margin - row.getMeasuredWidth(), name.top + Ui.dp(context, 4), wasVisible);
             return true;
         }
 
         // Centre on the first line of the name, even if the node also covers a flair line below it.
         int lineHeight = Math.min(name.height(), Ui.dp(context, 28));
         int x = anchorRight + gap;
-        if (fitPills(row, layerWidth - margin - x)) {
+        if (fitPills(row, maxRight - margin - x)) {
             row.measure(unspecified, unspecified);
             moveTo(context, row, x, name.top + (lineHeight - row.getMeasuredHeight()) / 2f, wasVisible);
             return true;
         }
         // No room on the line at all: just below the name.
-        if (!fitPills(row, layerWidth - margin - name.left)) {
+        if (!fitPills(row, maxRight - margin - name.left)) {
             return false;
         }
         row.measure(unspecified, unspecified);

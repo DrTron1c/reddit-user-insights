@@ -1,6 +1,13 @@
 package app.userinsights.extension;
 
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Parcelable;
+import android.text.TextPaint;
+import android.util.DisplayMetrics;
+import android.util.TypedValue;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.util.ArrayDeque;
@@ -25,8 +32,12 @@ final class ScreenScanner {
     private static final String NAME = "([A-Za-z0-9_-]{3,20})";
     /** Separators Reddit puts between header parts: bullet, middle dot, comma. */
     private static final String SEP = "[\\u2022\\u00B7,]";
+    /** "4h", "4 hr. ago", "4 hours ago", "just now". */
     private static final String TIME_TOKEN =
-            "(?:\\d+\\s?(?:s|m|h|d|w|mo|y|yr|yrs|min|mins|hr|hrs|sec|secs|day|days|wk|wks)(?:\\s+ago)?|just now)";
+            "(?:\\d+\\s?(?:s|m|h|d|w|mo|y|yr|yrs|min|mins|hr|hrs|sec|secs|day|days|wk|wks)\\.?(?:\\s+ago)?"
+                    + "|\\d+\\s+(?:second|minute|hour|day|week|month|year)s?(?:\\s+ago)?"
+                    + "|(?:an?|one)\\s+(?:second|minute|hour|day|week|month|year)\\s+ago"
+                    + "|just now)";
     private static final String TAGS = "(?:OP|MOD|Mod|Admin|ADMIN|Edited|edited)";
 
     /** "u/name" on its own. */
@@ -61,6 +72,12 @@ final class ScreenScanner {
             "^" + NAME + "[,.]?\\s+(?:\\d+|an?|one)\\s+(?:second|minute|hour|day|week|month|year)s?\\s+ago",
             Pattern.CASE_INSENSITIVE);
 
+    /** Labels of profile pictures next to names, such as "underthestarlights avatar". */
+    private static final Pattern DESC_AVATAR = Pattern.compile(
+            "^(?:(?:u/)?" + NAME + "(?:'s)?\\s+(?:avatar|profile (?:picture|image|icon)|snoovatar)"
+                    + "|(?:avatar|profile (?:picture|image|icon)|snoovatar)\\s+(?:for|of)\\s+(?:u/)?([A-Za-z0-9_-]{3,20}))\\s*$",
+            Pattern.CASE_INSENSITIVE);
+
     /** The message Reddit shows on profiles that hide their activity. */
     private static final Pattern HIDDEN = Pattern.compile(
             "(keeps?\\s+(?:their|this|his|her)\\s+(?:profile|activity|account|posts|comments)[^.]{0,30}(?:hidden|private)"
@@ -71,6 +88,11 @@ final class ScreenScanner {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern NAME_IN_HIDDEN = Pattern.compile(
             "(?:u/)?" + NAME + "\\s+(?:likes\\s+to\\s+keep|keeps|has\\s+hidden|hid|hides)", Pattern.CASE_INSENSITIVE);
+
+    /** The reply bar under comments, which covers the comment below it. */
+    private static final Pattern COMPOSER = Pattern.compile(
+            "^\\s*\\+?\\s*(?:join the conversation|add a comment|write a comment|add a reply|reply to .{1,40})\\s*$",
+            Pattern.CASE_INSENSITIVE);
 
     /** Tab labels of a profile page. */
     private static final Set<String> PROFILE_TABS = new HashSet<>(Arrays.asList(
@@ -104,6 +126,10 @@ final class ScreenScanner {
         final String headerText;
         /** True for the u/name header of a profile page. */
         boolean profileHeader;
+        /** Screen x where the header text ("name 4h") really ends, or -1 if unknown. */
+        int textRight = -1;
+        /** Bounds of the list the name is in (screen), or null. Pills stay inside it. */
+        Rect container;
 
         Hit(String user, Rect bounds, boolean merged, String headerText) {
             this.user = user;
@@ -133,12 +159,18 @@ final class ScreenScanner {
         String cls;
         String viewId;
         int depth;
+        AccessibilityNodeInfo info;
+        /** Bounds of the nearest scrollable ancestor (the list), or null. */
+        Rect container;
     }
 
     private ScreenScanner() {
     }
 
-    static Result scan(AccessibilityNodeInfo root, boolean dump, float density) {
+    static Result scan(AccessibilityNodeInfo root, boolean dump, DisplayMetrics metrics) {
+        float density = metrics.density;
+        TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+        paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 14, metrics));
         List<Node> nodes = flatten(root);
         Result result = new Result();
         if (dump) {
@@ -147,6 +179,7 @@ final class ScreenScanner {
 
         int maxRowHeight = (int) (72 * density);
         Set<String> usedBounds = new HashSet<>();
+        List<Hit> avatarHits = new ArrayList<>();
 
         for (int i = 0; i < nodes.size(); i++) {
             Node node = nodes.get(i);
@@ -168,8 +201,12 @@ final class ScreenScanner {
                 if (m != null) {
                     Hit hit = addHit(result, usedBounds, m.group(1), node.bounds, tall,
                             tall ? null : text.trim());
-                    if (hit != null && exact) {
-                        hit.profileHeader = true;
+                    if (hit != null) {
+                        hit.profileHeader = exact;
+                        hit.container = node.container;
+                        if (!tall) {
+                            hit.textRight = textRight(node, text, shortText ? text.length() : m.end(1), paint, density);
+                        }
                     }
                     continue;
                 }
@@ -177,7 +214,14 @@ final class ScreenScanner {
                 // "name 4h", "name OP 4h", "name • 4h", "name, 4h, flair".
                 m = NAME_TIME.matcher(text);
                 if (m.find() && isPlausibleName(m.group(1))) {
-                    addHit(result, usedBounds, m.group(1), node.bounds, tall && !shortText, m.group(0));
+                    boolean merged = tall && !shortText;
+                    Hit hit = addHit(result, usedBounds, m.group(1), node.bounds, merged, m.group(0));
+                    if (hit != null) {
+                        hit.container = node.container;
+                        if (!merged) {
+                            hit.textRight = textRight(node, text, m.end(), paint, density);
+                        }
+                    }
                     continue;
                 }
 
@@ -188,9 +232,19 @@ final class ScreenScanner {
                         int timeIndex = followingTime(nodes, i);
                         if (timeIndex >= 0) {
                             // Put the pills after the time, not between the name and the time.
+                            Node time = nodes.get(timeIndex);
                             Rect header = new Rect(node.bounds);
-                            header.union(nodes.get(timeIndex).bounds);
-                            addHit(result, usedBounds, m.group(1), header, false, null);
+                            header.union(time.bounds);
+                            Hit hit = addHit(result, usedBounds, m.group(1), header, false, null);
+                            if (hit != null) {
+                                hit.container = node.container;
+                                int nameRight = textRight(node, text, text.length(), paint, density);
+                                String timeText = time.text != null ? time.text : time.desc;
+                                int timeRight = time.text != null
+                                        ? textRight(time, timeText, timeText.length(), paint, density)
+                                        : time.bounds.right;
+                                hit.textRight = Math.max(nameRight, timeRight);
+                            }
                             continue;
                         }
                     }
@@ -200,6 +254,31 @@ final class ScreenScanner {
             // Labels of whole comments/posts, used when the name is not a separate node.
             String desc = node.desc;
             if (desc != null && desc.length() <= 400) {
+                boolean tall = node.bounds.height() > maxRowHeight;
+
+                // "name, 4 hours ago, ..." as a label.
+                Matcher header = NAME_TIME.matcher(desc);
+                if (header.find() && isPlausibleName(header.group(1))) {
+                    Hit hit = addHit(result, usedBounds, header.group(1), node.bounds, tall && desc.length() > 60,
+                            text == null ? header.group(0) : null);
+                    if (hit != null) {
+                        hit.container = node.container;
+                    }
+                    continue;
+                }
+
+                // A profile picture with the name in its label: the name is written right next to it.
+                Matcher avatar = DESC_AVATAR.matcher(desc.trim());
+                if (avatar.find()) {
+                    String user = avatar.group(1) != null ? avatar.group(1) : avatar.group(2);
+                    if (isPlausibleName(user) && node.bounds.height() <= maxRowHeight) {
+                        Hit avatarHit = new Hit(user, new Rect(node.bounds), false, user + " 00h");
+                        avatarHit.container = node.container;
+                        avatarHits.add(avatarHit);
+                    }
+                    continue;
+                }
+
                 String user = null;
                 Matcher m = DESC_BY.matcher(desc);
                 if (m.find()) {
@@ -213,12 +292,17 @@ final class ScreenScanner {
                 }
                 if (user != null) {
                     boolean merged = node.bounds.height() > maxRowHeight;
-                    addHit(result, usedBounds, user, node.bounds, merged, null);
+                    Hit hit = addHit(result, usedBounds, user, node.bounds, merged, null);
+                    if (hit != null) {
+                        hit.container = node.container;
+                    }
                 }
             }
         }
 
+        addAvatarHits(result, usedBounds, avatarHits, density);
         removeMergedDuplicates(result.hits);
+        removeCovered(nodes, result.hits);
         findProfile(nodes, result);
         findHiddenProfile(nodes, result);
         return result;
@@ -281,6 +365,114 @@ final class ScreenScanner {
         Hit hit = new Hit(user, new Rect(bounds), merged, headerText);
         result.hits.add(hit);
         return hit;
+    }
+
+    /**
+     * Adds names known only from a profile picture's label, when the name was not found as text.
+     * The name is written to the right of the picture, on its first line.
+     */
+    private static void addAvatarHits(Result result, Set<String> usedBounds, List<Hit> avatarHits, float density) {
+        for (Hit avatar : avatarHits) {
+            boolean found = false;
+            for (Hit hit : result.hits) {
+                if (hit.user.equalsIgnoreCase(avatar.user)
+                        && Math.abs(hit.bounds.top - avatar.bounds.top) < avatar.bounds.height() + 40 * density) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                continue;
+            }
+            int left = avatar.bounds.right + (int) (8 * density);
+            int lineHeight = (int) (22 * density);
+            // Wide on purpose: the pills are placed after the measured "name 00h" text.
+            Rect line = new Rect(left, avatar.bounds.top, left + (int) (2000 * density), avatar.bounds.top + lineHeight);
+            Hit hit = addHit(result, usedBounds, avatar.user, line, false, avatar.headerText);
+            if (hit != null) {
+                hit.container = avatar.container;
+            }
+        }
+    }
+
+    /**
+     * Screen x where text[0, end) ends inside a node. Exact when Android can report character
+     * positions (Compose text can); otherwise measured.
+     */
+    private static int textRight(Node node, String text, int end, TextPaint paint, float density) {
+        end = Math.max(1, Math.min(end, text.length()));
+        String firstLine = text.split("\n", 2)[0];
+        boolean wholeText = end >= text.trim().length();
+        // A node about as wide as its text ends where its text ends.
+        if (wholeText && node.bounds.width() <= paint.measureText(firstLine) + 24 * density) {
+            return node.bounds.right;
+        }
+        int exact = characterRight(node.info, end - 1);
+        if (exact > 0) {
+            return Math.min(node.bounds.right, exact);
+        }
+        String part = text.substring(0, end).split("\n", 2)[0];
+        int measured = (int) Math.ceil(paint.measureText(part) * 1.05f);
+        return Math.min(node.bounds.right, node.bounds.left + measured);
+    }
+
+    /** Right edge on screen of one character of a text node, or -1. */
+    private static int characterRight(AccessibilityNodeInfo info, int index) {
+        if (info == null || index < 0 || Build.VERSION.SDK_INT < 26) {
+            return -1;
+        }
+        try {
+            String key = AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY;
+            List<String> available = info.getAvailableExtraData();
+            if (available == null || !available.contains(key)) {
+                return -1;
+            }
+            Bundle args = new Bundle();
+            args.putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_START_INDEX, index);
+            args.putInt(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_ARG_LENGTH, 1);
+            if (!info.refreshWithExtraData(key, args)) {
+                return -1;
+            }
+            Parcelable[] boxes = info.getExtras().getParcelableArray(key);
+            if (boxes != null && boxes.length > 0 && boxes[0] instanceof RectF) {
+                RectF box = (RectF) boxes[0];
+                if (box.right > 0) {
+                    return (int) Math.ceil(box.right);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Not supported by this node.
+        }
+        return -1;
+    }
+
+    /**
+     * Drops names that are covered by the reply bar, or outside the visible part of their list
+     * (such as a comment that is scrolled under the bar at the bottom).
+     */
+    private static void removeCovered(List<Node> nodes, List<Hit> hits) {
+        List<Rect> covers = new ArrayList<>();
+        for (Node node : nodes) {
+            String label = node.text != null ? node.text : node.desc;
+            if (node.cls.endsWith("EditText") || (label != null && label.length() <= 60 && COMPOSER.matcher(label).find())) {
+                covers.add(node.bounds);
+            }
+        }
+        List<Hit> remove = new ArrayList<>();
+        for (Hit hit : hits) {
+            if (hit.container != null && (hit.bounds.centerY() < hit.container.top
+                    || hit.bounds.centerY() > hit.container.bottom)) {
+                remove.add(hit);
+                continue;
+            }
+            for (Rect cover : covers) {
+                if (Rect.intersects(cover, hit.bounds) && hit.bounds.centerY() >= cover.top - 4) {
+                    remove.add(hit);
+                    break;
+                }
+            }
+        }
+        hits.removeAll(remove);
     }
 
     /** Drops a whole-comment hit when the same name was also found as its own text inside it. */
@@ -387,12 +579,15 @@ final class ScreenScanner {
         List<Node> out = new ArrayList<>();
         ArrayDeque<AccessibilityNodeInfo> stack = new ArrayDeque<>();
         ArrayDeque<Integer> depths = new ArrayDeque<>();
+        ArrayDeque<Rect[]> containers = new ArrayDeque<>();
         stack.push(root);
         depths.push(0);
+        containers.push(new Rect[]{null});
 
         while (!stack.isEmpty() && out.size() < MAX_NODES) {
             AccessibilityNodeInfo info = stack.pop();
             int depth = depths.pop();
+            Rect container = containers.pop()[0];
             if (info == null) {
                 continue;
             }
@@ -411,8 +606,12 @@ final class ScreenScanner {
                 node.cls = cls == null ? "" : cls.toString();
                 node.viewId = info.getViewIdResourceName();
                 node.depth = depth;
+                node.info = info;
+                node.container = container;
                 out.add(node);
 
+                // Children of a scrollable node (a list) are inside it.
+                Rect childContainer = info.isScrollable() ? new Rect(node.bounds) : container;
                 // Push children in reverse so they are visited in order.
                 int count = info.getChildCount();
                 for (int c = count - 1; c >= 0; c--) {
@@ -420,6 +619,7 @@ final class ScreenScanner {
                     if (child != null) {
                         stack.push(child);
                         depths.push(depth + 1);
+                        containers.push(new Rect[]{childContainer});
                     }
                 }
             } catch (Throwable ignored) {

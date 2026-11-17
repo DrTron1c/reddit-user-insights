@@ -100,10 +100,7 @@ public class InsightsAccessibilityService extends AccessibilityService {
                     return;
                 }
                 // Scrolled by something else (a button, the keyboard): hide until it settles.
-                Activity activity = UserInsights.currentActivity();
-                if (activity != null && !UserInsights.isOwnScreen(activity)) {
-                    OverlayManager.hideTemporarily(activity);
-                }
+                OverlayManager.hideAllTemporarily();
                 scheduleScan(120, true);
                 break;
 
@@ -158,7 +155,7 @@ public class InsightsAccessibilityService extends AccessibilityService {
             return;
         }
         if (!Prefs.badgesEnabled() && !Prefs.hiddenButtonEnabled()) {
-            OverlayManager.clear(activity);
+            OverlayManager.clearAll();
             return;
         }
         long start = SystemClock.uptimeMillis();
@@ -169,12 +166,17 @@ public class InsightsAccessibilityService extends AccessibilityService {
                 return;
             }
             boolean dump = Prefs.consumeDebugDump();
-            float density = getResources().getDisplayMetrics().density;
-            ScreenScanner.Result result = ScreenScanner.scan(root, dump, density);
+            ScreenScanner.Result result = ScreenScanner.scan(root, dump, getResources().getDisplayMetrics());
             if (dump && result.dump != null) {
                 copyDump(result);
             }
-            OverlayManager.render(activity, result);
+            // Draw in the window the content is in: the activity, or a dialog or sheet above it.
+            android.view.ViewGroup host = WindowFinder.targetHost(activity);
+            if (host == null) {
+                return;
+            }
+            ScrollTracker.install(activity, WindowFinder.windowOf(activity, host), host);
+            OverlayManager.render(activity, host, result);
             if (result.profileUser != null && result.hiddenUser == null && Prefs.hiddenButtonEnabled()
                     && !result.profileUser.equalsIgnoreCase(lastPrefetchedUser)) {
                 // So "Full history" opens instantly.
@@ -241,10 +243,7 @@ public class InsightsAccessibilityService extends AccessibilityService {
             instance = null;
         }
         ArcticShift.setOnDataChanged(null);
-        Activity activity = UserInsights.currentActivity();
-        if (activity != null) {
-            OverlayManager.clear(activity);
-        }
+        OverlayManager.clearAll();
         super.onDestroy();
     }
 }

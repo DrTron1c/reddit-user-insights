@@ -32,6 +32,8 @@ final class ScrollTracker implements Window.Callback {
     private static long trackingEndedAt;
 
     private final Activity activity;
+    /** Root view of the watched window, where its pills are drawn. */
+    private final android.view.ViewGroup host;
     private final Window.Callback wrapped;
     private final int touchSlop;
     private final int minFlingVelocity;
@@ -49,8 +51,9 @@ final class ScrollTracker implements Window.Callback {
     private long flingStartedAt;
     private long lastMidScanAt;
 
-    private ScrollTracker(Activity activity, Window.Callback wrapped) {
+    private ScrollTracker(Activity activity, android.view.ViewGroup host, Window.Callback wrapped) {
         this.activity = activity;
+        this.host = host;
         this.wrapped = wrapped;
         ViewConfiguration configuration = ViewConfiguration.get(activity);
         touchSlop = configuration.getScaledTouchSlop();
@@ -59,17 +62,25 @@ final class ScrollTracker implements Window.Callback {
         scroller = new OverScroller(activity);
     }
 
+    /** Watches the touches of the activity's own window. */
     static void install(Activity activity) {
+        Window window = activity.getWindow();
+        if (window != null && window.getDecorView() instanceof android.view.ViewGroup) {
+            install(activity, window, (android.view.ViewGroup) window.getDecorView());
+        }
+    }
+
+    /** Watches the touches of a window of the activity (its own, or a dialog or sheet above it). */
+    static void install(Activity activity, Window window, android.view.ViewGroup host) {
         try {
-            Window window = activity.getWindow();
-            if (window == null) {
+            if (window == null || host == null) {
                 return;
             }
             Window.Callback callback = window.getCallback();
             if (callback == null || callback instanceof ScrollTracker) {
                 return;
             }
-            window.setCallback(new ScrollTracker(activity, callback));
+            window.setCallback(new ScrollTracker(activity, host, callback));
         } catch (Throwable t) {
             android.util.Log.w(UserInsights.TAG, "Could not install scroll tracker", t);
         }
@@ -103,7 +114,7 @@ final class ScrollTracker implements Window.Callback {
                 lastY = downY;
                 dragging = false;
                 // Touches on our own views (pills, the hidden-activity panel) are not Reddit scrolling.
-                ignoreGesture = OverlayManager.isOnOverlay(activity, downX, downY);
+                ignoreGesture = OverlayManager.isOnOverlay(host, downX, downY);
                 if (velocityTracker != null) {
                     velocityTracker.clear();
                 } else {
@@ -115,7 +126,7 @@ final class ScrollTracker implements Window.Callback {
             case MotionEvent.ACTION_POINTER_DOWN:
                 // Pinch or two-finger gestures: let the scan after the gesture place the pills.
                 if (dragging) {
-                    OverlayManager.hideTemporarily(activity);
+                    OverlayManager.hideTemporarily(host);
                 }
                 ignoreGesture = true;
                 break;
@@ -132,7 +143,7 @@ final class ScrollTracker implements Window.Callback {
                     if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy)) {
                         // Sideways swipe (such as to the next post): hide until it settles.
                         ignoreGesture = true;
-                        OverlayManager.hideTemporarily(activity);
+                        OverlayManager.hideTemporarily(host);
                         InsightsAccessibilityService.requestScan(250);
                         break;
                     }
@@ -145,7 +156,7 @@ final class ScrollTracker implements Window.Callback {
                     // Compose starts scrolling after the slop, by the distance beyond it.
                     lastY = downY + Math.signum(dy) * touchSlop;
                 }
-                OverlayManager.shiftRows(activity, y - lastY);
+                OverlayManager.shiftRows(host, y - lastY);
                 lastY = y;
                 maybeScanWhileMoving();
                 break;
@@ -207,7 +218,7 @@ final class ScrollTracker implements Window.Callback {
                 return;
             }
             int y = scroller.getCurrY();
-            OverlayManager.shiftRows(activity, y - lastFlingY);
+            OverlayManager.shiftRows(host, y - lastFlingY);
             lastFlingY = y;
             maybeScanWhileMoving();
             Choreographer.getInstance().postFrameCallback(this);
