@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.1.0...v1.2.0) (2026-11-17)
+
+### ✨ New Features
+
+* Seamless pills and instant loading ([aa10042](https://github.com/DrTron1c/reddit-user-insights/commit/aa10042e1a1781bf998b12d9371b5b8b79c47375))
+
 ## [1.1.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.0.1...v1.1.0) (2026-11-17)
 
 ### ✨ New Features

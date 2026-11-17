@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-17T20:05:43",
-  "description": "## [1.1.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.0.1...v1.1.0) (2026-11-17)\n\n### ✨ New Features\n\n* Hidden activity inside profiles and a Reddit settings entry ([4dc6680](https://github.com/DrTron1c/reddit-user-insights/commit/4dc6680530c956026398d1c806bb160970f64bc7))",
-  "download_url": "https://github.com/DrTron1c/reddit-user-insights/releases/download/v1.1.0/patches-1.1.0.mpp",
+  "created_at": "2026-11-17T21:22:15",
+  "description": "## [1.2.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.1.0...v1.2.0) (2026-11-17)\n\n### ✨ New Features\n\n* Seamless pills and instant loading ([aa10042](https://github.com/DrTron1c/reddit-user-insights/commit/aa10042e1a1781bf998b12d9371b5b8b79c47375))",
+  "download_url": "https://github.com/DrTron1c/reddit-user-insights/releases/download/v1.2.0/patches-1.2.0.mpp",
   "signature_download_url": "",
-  "version": "1.1.0"
+  "version": "1.2.0"
 }
