@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# Prints short search results from the decompiled code (no whole files).
+# Prints short search results from the decompiled code.
 SRC="$1"
 cd "$SRC" || exit 1
 show() { echo; echo "===== $1"; }
 
-show "Packages with comment UI"
-find . -type d | grep -iE "comment" | grep -viE "test|preview" | head -80
+H=com/reddit/postdetail/comment/refactor/header
+show "Header files"
+find "$H" -name "*.java" -printf "%s %p\n" | sort -k2 | head -60
 
-show "Data class strings mentioning author (toString)"
-grep -rhoE '"[A-Za-z]*(Comment|Header|Author|Metadata)[A-Za-z]*\((author|authorName|username|userName|displayName)[A-Za-z]*=' --include=*.java . | sort | uniq -c | sort -rn | head -60
+for f in $(find "$H" -name "*.java" | sort | head -40); do
+  show "SIGNATURES $f"
+  grep -nE "^(public |final |static |abstract )*(class|interface|enum) |^\s+(public|private|protected)?\s*(static )?(final )?[A-Za-z0-9_<>\[\], .]+ [A-Za-z0-9_]+\(.*\) ?\{|\"[^\"]{2,}\"" "$f" | cut -c1-260 | head -70
+done
 
-show "Files with comment header toString"
-grep -rlE '"Comment[A-Za-z]*Header[A-Za-z]*\(' --include=*.java . | head -40
+show "comment_author usages"
+grep -rn -B4 -A30 '"comment_author"' --include=*.java . | cut -c1-240 | head -260
 
-show "Test tags / keys with comment_ or author"
-grep -rhoE '"(comment_[a-z_]+|[a-z_]*author[a-z_]*)"' --include=*.java . | sort | uniq -c | sort -rn | head -80
+show "Comment(authorLine= class"
+f=$(grep -rlE '"Comment\(authorLine=' --include=*.java . | head -1); echo "$f"; head -80 "$f" | cut -c1-220
 
-show "Compose state classes"
-grep -rlE '"MutableState\(value=|StructuralEqualityPolicy' --include=*.java . | head -10
+show "AuthorHeader class"
+f=$(grep -rlE '"AuthorHeader\(authorAvatarUrl=' --include=*.java . | head -1); echo "$f"; head -60 "$f" | cut -c1-220
+
+show "Compose state"
+for f in defpackage/bhi0.java defpackage/wfp.java; do echo "--- $f"; grep -nE "class |MutableState\(value=|StructuralEqualityPolicy|public .*\(" "$f" | head -30; done
