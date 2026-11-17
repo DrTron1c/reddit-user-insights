@@ -24,9 +24,9 @@ Data comes from the public [Arctic Shift](https://arctic-shift.photon-reddit.com
 ## Patches
 
 <!-- PATCHES_START EXPANDED -->
-> **[v1.3.0](https://github.com/DrTron1c/reddit-user-insights/releases/tag/v1.3.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;2 patches total
+> **[v1.4.0](https://github.com/DrTron1c/reddit-user-insights/releases/tag/v1.4.0)**&nbsp;&nbsp;•&nbsp;&nbsp;`main`&nbsp;&nbsp;•&nbsp;&nbsp;3 patches total
 <details open>
-<summary>📦 Reddit&nbsp;&nbsp;•&nbsp;&nbsp;2 patches</summary>
+<summary>📦 Reddit&nbsp;&nbsp;•&nbsp;&nbsp;3 patches</summary>
 <br>
 
 **Package name:** `com.reddit.frontpage`
@@ -39,6 +39,7 @@ Data comes from the public [Arctic Shift](https://arctic-shift.photon-reddit.com
 | 💊&nbsp;Patch | 📜&nbsp;Description | ⚙️&nbsp;Options |
 |----------|----------------|-----------|
 | [User insights](#user-insights) | Shows each user's top 3 subreddits next to their name and unhides hidden profiles. |  |
+| [User insights pills in comments](#user-insights-pills-in-comments) | Draws the top subreddits inside the comment header, right after the name. |  |
 | [User insights settings entry](#user-insights-settings-entry) | Adds User Insights to Reddit's settings, above the Morphe entry. Reddit 2026.30.0 or newer. |  |
 
 </details>

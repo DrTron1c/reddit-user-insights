@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-11-17T21:37:51",
-  "description": "## [1.3.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.2.0...v1.3.0) (2026-11-17)\n\n### ✨ New Features\n\n* Pills right after the name in comments, full subreddit names ([1c1ba19](https://github.com/DrTron1c/reddit-user-insights/commit/1c1ba190e9f7578913ba48943cd9db536d801bda))",
-  "download_url": "https://github.com/DrTron1c/reddit-user-insights/releases/download/v1.3.0/patches-1.3.0.mpp",
+  "created_at": "2026-11-17T22:14:46",
+  "description": "## [1.4.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.3.0...v1.4.0) (2026-11-17)\n\n### ✨ New Features\n\n* Pills inside comment headers, and daily test with the newest Reddit ([ada9c9a](https://github.com/DrTron1c/reddit-user-insights/commit/ada9c9a586e50ec3ead0c6fc0135c46de58395a9))",
+  "download_url": "https://github.com/DrTron1c/reddit-user-insights/releases/download/v1.4.0/patches-1.4.0.mpp",
   "signature_download_url": "",
-  "version": "1.3.0"
+  "version": "1.4.0"
 }

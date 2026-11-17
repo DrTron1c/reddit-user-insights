@@ -1,3 +1,9 @@
+## [1.4.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.3.0...v1.4.0) (2026-11-17)
+
+### ✨ New Features
+
+* Pills inside comment headers, and daily test with the newest Reddit ([ada9c9a](https://github.com/DrTron1c/reddit-user-insights/commit/ada9c9a586e50ec3ead0c6fc0135c46de58395a9))
+
 ## [1.3.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.2.0...v1.3.0) (2026-11-17)
 
 ### ✨ New Features
