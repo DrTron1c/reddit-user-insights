@@ -96,6 +96,8 @@ public class SettingsActivity extends Activity {
         badgeCard.addView(heading("Top subreddit badges"));
         badgeCard.addView(toggle("Show badges next to usernames", Prefs.badgesEnabled(),
                 (b, checked) -> Prefs.setBadgesEnabled(checked)));
+        badgeCard.addView(toggle("Draw them inside comments (restart Reddit)", Prefs.embeddedEnabled(),
+                (b, checked) -> Prefs.setEmbeddedEnabled(checked)));
 
         badgeCard.addView(label("Number of badges"));
         RadioGroup countGroup = radioGroup(new String[]{"1", "2", "3"}, Prefs.badgeCount() - 1, true);

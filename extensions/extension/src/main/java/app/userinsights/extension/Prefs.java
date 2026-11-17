@@ -16,6 +16,9 @@ final class Prefs {
     private static final String KEY_TIME_WINDOW = "time_window";
     private static final String KEY_PROMPT_DISMISSED = "prompt_dismissed";
     private static final String KEY_DEBUG_DUMP = "debug_dump_next";
+    private static final String KEY_EMBEDDED = "embedded_pills_enabled";
+    private static final String KEY_EMBEDDED_CRASHED = "embedded_pills_crashed";
+    private static final String KEY_EMBEDDED_CRASH_SHOWN = "embedded_pills_crash_shown";
 
     /** Values for the Arctic Shift "after" parameter. Empty means all time. */
     static final String WINDOW_ALL = "";
@@ -73,6 +76,35 @@ final class Prefs {
 
     static void setInlineHiddenEnabled(boolean value) {
         putBoolean(KEY_INLINE_HIDDEN, value);
+    }
+
+    /** Pills drawn inside comment headers (off after a crash in them, until turned on again). */
+    static boolean embeddedEnabled() {
+        return getBoolean(KEY_EMBEDDED, true) && !getBoolean(KEY_EMBEDDED_CRASHED, false);
+    }
+
+    static void setEmbeddedEnabled(boolean value) {
+        SharedPreferences sp = sp();
+        if (sp != null) {
+            sp.edit().putBoolean(KEY_EMBEDDED, value).putBoolean(KEY_EMBEDDED_CRASHED, false).apply();
+        }
+    }
+
+    /** Called while the app is crashing, so it is written at once. */
+    static void markEmbeddedCrashed() {
+        SharedPreferences sp = sp();
+        if (sp != null) {
+            sp.edit().putBoolean(KEY_EMBEDDED_CRASHED, true).putBoolean(KEY_EMBEDDED_CRASH_SHOWN, false).commit();
+        }
+    }
+
+    /** True once after a crash turned the pills in comments off, to tell the user. */
+    static boolean consumeEmbeddedCrashNotice() {
+        if (!getBoolean(KEY_EMBEDDED_CRASHED, false) || getBoolean(KEY_EMBEDDED_CRASH_SHOWN, true)) {
+            return false;
+        }
+        putBoolean(KEY_EMBEDDED_CRASH_SHOWN, true);
+        return true;
     }
 
     static int badgeCount() {

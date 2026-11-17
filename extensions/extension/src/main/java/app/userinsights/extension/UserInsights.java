@@ -38,6 +38,11 @@ public final class UserInsights {
         try {
             init(activity);
             resumedActivity = new WeakReference<>(activity);
+            if (Prefs.consumeEmbeddedCrashNotice()) {
+                android.widget.Toast.makeText(activity, "User Insights: pills in comments were turned off after a crash. "
+                        + "Floating pills are used instead. You can turn them back on in User Insights settings.",
+                        android.widget.Toast.LENGTH_LONG).show();
+            }
             maybeShowEnablePrompt(activity);
         } catch (Throwable t) {
             Log.e(TAG, "onMainActivityCreate failed", t);
@@ -51,7 +56,28 @@ public final class UserInsights {
         if (!callbacksRegistered && appContext instanceof Application) {
             ((Application) appContext).registerActivityLifecycleCallbacks(new LifecycleCallbacks());
             callbacksRegistered = true;
+            installCrashGuard();
         }
+    }
+
+    /**
+     * If the app ever crashes inside the pills drawn in comments, they are turned off for the
+     * next start (floating pills are used instead), so a crash cannot repeat.
+     */
+    private static void installCrashGuard() {
+        final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            try {
+                if (EmbeddedPills.causedCrash(error)) {
+                    Prefs.markEmbeddedCrashed();
+                }
+            } catch (Throwable ignored) {
+                // Never get in the way of the crash report.
+            }
+            if (previous != null) {
+                previous.uncaughtException(thread, error);
+            }
+        });
     }
 
     static Context app() {

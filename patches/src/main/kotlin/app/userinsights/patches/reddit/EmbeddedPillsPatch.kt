@@ -2,21 +2,17 @@ package app.userinsights.patches.reddit
 
 import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
 import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
-import app.morphe.patcher.patch.classDefByOrNull
 import app.morphe.patcher.patch.mutableClassDefBy
 import app.morphe.patcher.patch.patch
 import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod.Companion.toMutable
-import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.builder.MutableMethodImplementation
 import com.android.tools.smali.dexlib2.iface.instruction.FiveRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.Instruction
-import com.android.tools.smali.dexlib2.iface.instruction.NarrowLiteralInstruction
-import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.RegisterRangeInstruction
-import com.android.tools.smali.dexlib2.iface.instruction.WideLiteralInstruction
 import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
@@ -32,14 +28,6 @@ private const val EMBED_CLASS = "Lapp/userinsights/extension/EmbeddedPills;"
 internal object CommentAuthorFingerprint : Fingerprint(
     returnType = "V",
     strings = listOf("comment_author", "role_indicator")
-)
-
-/** toString of Compose's SnapshotMutableStateImpl. */
-internal object MutableStateToStringFingerprint : Fingerprint(
-    name = "toString",
-    returnType = "Ljava/lang/String;",
-    parameters = listOf(),
-    strings = listOf("MutableState(value=")
 )
 
 @Suppress("unused")
@@ -125,19 +113,17 @@ val userInsightsEmbeddedPillsPatch = patch(
             return@execute
         }
 
-        // Values of the name's Text call, so the pills are drawn the same way (one line, same size).
-        fun literalWrittenTo(register: Int): Long? {
-            for (index in textIndex - 1 downTo maxOf(0, textIndex - 80)) {
-                val instruction = instructions[index]
-                if (instruction is OneRegisterInstruction && instruction.registerA == register) {
-                    return when (instruction) {
-                        is WideLiteralInstruction -> instruction.wideLiteral
-                        is NarrowLiteralInstruction -> instruction.narrowLiteral.toLong()
-                        else -> null
-                    }
-                }
-            }
-            return null
+        // One line, no wrapping, "..." when too long: (overflow, softWrap, maxLines) follow the first
+        // boolean parameter after the color.
+        val softWrapParameter = (3 until styleParameter).firstOrNull { textParameters[it] == "Z" }
+        val overflowParameter = softWrapParameter?.minus(1)?.takeIf { textParameters[it] == "I" }
+        val maxLinesParameter = softWrapParameter?.plus(1)?.takeIf { textParameters[it] == "I" }
+        val maskParameter = textParameters.size - 1
+        val explicit = setOfNotNull(0, 1, 2, styleParameter, overflowParameter, softWrapParameter, maxLinesParameter)
+        // Every other parameter uses its default (bit i of the defaults mask is parameter i).
+        var baseMask = 0
+        for (index in 0 until composerParameter) {
+            if (index !in explicit) baseMask = baseMask or (1 shl index)
         }
 
         // Replace the placeholder with a call to Reddit's Text composable.
@@ -146,18 +132,19 @@ val userInsightsEmbeddedPillsPatch = patch(
             val placeholder = methods.single { it.name == "drawText" }
             methods.remove(placeholder)
 
-            // Parameters: composer, text, color (wide), style, modifier.
-            val pComposer = argumentRegisters
-            val pText = argumentRegisters + 1
-            val pColor = argumentRegisters + 2
-            val pStyle = argumentRegisters + 4
-            val pModifier = argumentRegisters + 5
+            // One scratch register, then the parameters: composer, text, color (wide), style, modifier.
+            val scratch = argumentRegisters
+            val pComposer = argumentRegisters + 1
+            val pText = argumentRegisters + 2
+            val pColor = argumentRegisters + 3
+            val pStyle = argumentRegisters + 5
+            val pModifier = argumentRegisters + 6
+            val maskRegister = offsets[maskParameter]
 
             val smali = StringBuilder()
             textParameters.forEachIndexed { index, type ->
                 val register = offsets[index]
                 val wide = type == "J" || type == "D"
-                val isObject = type.startsWith("L") || type.startsWith("[")
                 when (index) {
                     0 -> smali.appendLine("move-object/from16 v$register, v$pText")
                     1 -> smali.appendLine("move-object/from16 v$register, v$pModifier")
@@ -167,18 +154,22 @@ val userInsightsEmbeddedPillsPatch = patch(
                         .appendLine("check-cast v$register, $type")
                     composerParameter -> smali.appendLine("move-object/from16 v$register, v$pComposer")
                         .appendLine("check-cast v$register, $type")
-                    textParameters.size - 3, textParameters.size - 2 ->
-                        smali.appendLine("const/16 v$register, 0x0")
-                    else -> {
-                        val literal = literalWrittenTo(start + register) ?: 0L
-                        when {
-                            wide -> smali.appendLine("const-wide v$register, ${literal}L")
-                            isObject -> smali.appendLine("const/16 v$register, 0x0")
-                            else -> smali.appendLine("const v$register, $literal")
-                        }
-                    }
+                    overflowParameter -> smali.appendLine("const/16 v$register, 0x2") // Ellipsis
+                    softWrapParameter -> smali.appendLine("const/16 v$register, 0x0")
+                    maxLinesParameter -> smali.appendLine("const/16 v$register, 0x1")
+                    maskParameter -> smali.appendLine("const v$register, $baseMask")
+                    else -> smali.appendLine(if (wide) "const-wide/16 v$register, 0x0" else "const/16 v$register, 0x0")
                 }
             }
+            // Use Reddit's default style or modifier when there is none to copy.
+            smali.appendLine("if-nez v$pStyle, :style_set")
+                .appendLine("const v$scratch, ${1 shl styleParameter}")
+                .appendLine("or-int v$maskRegister, v$maskRegister, v$scratch")
+                .appendLine(":style_set")
+                .appendLine("if-nez v$pModifier, :modifier_set")
+                .appendLine("const v$scratch, 0x2")
+                .appendLine("or-int v$maskRegister, v$maskRegister, v$scratch")
+                .appendLine(":modifier_set")
             smali.appendLine("invoke-static/range { v0 .. v${argumentRegisters - 1} }, $textReference")
             smali.appendLine("return-void")
 
@@ -197,34 +188,12 @@ val userInsightsEmbeddedPillsPatch = patch(
                     placeholder.accessFlags,
                     null,
                     null,
-                    MutableMethodImplementation(argumentRegisters + 6)
+                    MutableMethodImplementation(argumentRegisters + 7)
                 ).toMutable().apply {
-                    addInstructions(0, smali.toString())
+                    addInstructionsWithLabels(0, smali.toString())
                 }
             )
 
-            // Compose's mutable state, so headers redraw when subreddits arrive.
-            val stateBase = MutableStateToStringFingerprint.originalClassDefOrNull
-            val stateClass = stateBase?.let { base ->
-                classDefByOrNull { classDef ->
-                    (classDef.type == base.type || classDef.superclass == base.type) &&
-                        (classDef.accessFlags and AccessFlags.ABSTRACT.value) == 0 &&
-                        classDef.methods.any {
-                            it.name == "<init>" && it.parameterTypes.size == 2 &&
-                                it.parameterTypes[0].toString() == "Ljava/lang/Object;"
-                        }
-                }
-            }
-            val policyType = stateClass?.methods?.first {
-                it.name == "<init>" && it.parameterTypes.size == 2 && it.parameterTypes[0].toString() == "Ljava/lang/Object;"
-            }?.parameterTypes?.get(1)?.toString()
-
-            if (stateClass != null && policyType != null) {
-                replaceStringPlaceholder(this, "stateClassName", javaName(stateClass.type))
-                replaceStringPlaceholder(this, "policyClassName", javaName(policyType))
-            } else {
-                logger.warning("Compose state not found: comment headers show new pills when redrawn.")
-            }
         }
 
         // After the role badge: draw the pills. (Inserted first, as it is further down.)
@@ -246,35 +215,4 @@ val userInsightsEmbeddedPillsPatch = patch(
             """
         )
     }
-}
-
-private fun javaName(descriptor: String) = descriptor.removePrefix("L").removeSuffix(";").replace('/', '.')
-
-private fun replaceStringPlaceholder(
-    classDef: app.morphe.patcher.util.proxy.mutableTypes.MutableClass,
-    name: String,
-    value: String
-) {
-    val placeholder = classDef.methods.single { it.name == name }
-    classDef.methods.remove(placeholder)
-    classDef.methods.add(
-        ImmutableMethod(
-            classDef.type,
-            name,
-            listOf(),
-            "Ljava/lang/String;",
-            placeholder.accessFlags,
-            null,
-            null,
-            MutableMethodImplementation(1)
-        ).toMutable().apply {
-            addInstructions(
-                0,
-                """
-                    const-string v0, "$value"
-                    return-object v0
-                """
-            )
-        }
-    )
 }

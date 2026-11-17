@@ -66,6 +66,9 @@ public final class EmbeddedPills {
      * @param composer Compose composer.
      */
     public static void drawTags(Object composer) {
+        if (composer == null || !enabledThisSession()) {
+            return;
+        }
         String[] texts = {"", "", ""};
         long[] colors = {color(LOADING_COLOR), color(LOADING_COLOR), color(LOADING_COLOR)};
         try {
@@ -97,6 +100,35 @@ public final class EmbeddedPills {
         }
     }
 
+    private static Boolean sessionEnabled;
+
+    /**
+     * Decided once per app start, so the comment header keeps the same shape for the whole session.
+     */
+    private static boolean enabledThisSession() {
+        if (sessionEnabled == null) {
+            sessionEnabled = UserInsights.app() != null && Prefs.embeddedEnabled();
+        }
+        return sessionEnabled;
+    }
+
+    /** True if a crash came from drawing the pills in comments. */
+    static boolean causedCrash(Throwable error) {
+        for (Throwable t = error; t != null; t = t.getCause()) {
+            for (StackTraceElement frame : t.getStackTrace()) {
+                if (frame.getClassName().startsWith(EmbeddedPills.class.getName())) {
+                    return true;
+                }
+            }
+            for (Throwable suppressed : t.getSuppressed()) {
+                if (causedCrash(suppressed)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /** A Compose Color value from an ARGB colour. */
     private static long color(int argb) {
         return ((long) argb) << 32;
@@ -110,15 +142,11 @@ public final class EmbeddedPills {
         // Replaced during patching.
     }
 
-    /** Placeholder replaced during patching: Java name of Compose's mutable state class. */
-    static String stateClassName() {
-        return null;
-    }
-
-    /** Placeholder replaced during patching: Java name of Compose's mutation policy interface. */
-    static String policyClassName() {
-        return null;
-    }
+    /**
+     * Compose's mutable state class in Reddit. It keeps its real name because it is Parcelable,
+     * so it can be found the same way in every Reddit version.
+     */
+    private static final String STATE_CLASS = "androidx.compose.runtime.ParcelableSnapshotMutableState";
 
     /** Called when new subreddits arrive: redraws the comment headers that are on screen. */
     static void onDataChanged() {
@@ -151,14 +179,20 @@ public final class EmbeddedPills {
     /** A Compose mutable state of Reddit's own Compose version, made with reflection. */
     private static void createState() {
         try {
-            String stateName = stateClassName();
-            String policyName = policyClassName();
-            if (stateName == null || policyName == null) {
+            ClassLoader loader = EmbeddedPills.class.getClassLoader();
+            Class<?> stateClass = Class.forName(STATE_CLASS, true, loader);
+            // Constructor (value, policy); the policy interface has an obfuscated name.
+            Constructor<?> constructor = null;
+            for (Constructor<?> candidate : stateClass.getDeclaredConstructors()) {
+                Class<?>[] types = candidate.getParameterTypes();
+                if (types.length == 2 && types[0] == Object.class && types[1].isInterface()) {
+                    constructor = candidate;
+                }
+            }
+            if (constructor == null) {
                 return;
             }
-            ClassLoader loader = EmbeddedPills.class.getClassLoader();
-            Class<?> stateClass = Class.forName(stateName, true, loader);
-            Class<?> policyClass = Class.forName(policyName, true, loader);
+            Class<?> policyClass = constructor.getParameterTypes()[1];
             Object policy = Proxy.newProxyInstance(loader, new Class<?>[]{policyClass}, (proxy, method, args) -> {
                 Class<?> returnType = method.getReturnType();
                 if (args != null && args.length == 2 && returnType == boolean.class) {
@@ -176,7 +210,6 @@ public final class EmbeddedPills {
                         return returnType == boolean.class ? Boolean.FALSE : null;
                 }
             });
-            Constructor<?> constructor = stateClass.getDeclaredConstructor(Object.class, policyClass);
             constructor.setAccessible(true);
             Object created = constructor.newInstance(0, policy);
             Method get = findMethod(stateClass, "getValue", 0);
