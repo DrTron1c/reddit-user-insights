@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
  * across app updates as long as the visible text stays similar.
  */
 final class ScreenScanner {
-    private static final int MAX_NODES = 2500;
+    private static final int MAX_NODES = 1500;
     private static final int MAX_DUMP_LINES = 500;
 
     private static final String NAME = "([A-Za-z0-9_-]{3,20})";

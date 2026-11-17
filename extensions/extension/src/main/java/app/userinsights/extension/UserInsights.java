@@ -206,7 +206,10 @@ public final class UserInsights {
         @Override
         public void onActivityResumed(Activity activity) {
             resumedActivity = new WeakReference<>(activity);
-            InsightsAccessibilityService.requestScan(400);
+            if (!isOwnScreen(activity)) {
+                ScrollTracker.install(activity);
+            }
+            InsightsAccessibilityService.requestScan(0);
         }
 
         @Override

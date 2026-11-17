@@ -27,13 +27,21 @@ final class OverlayManager {
     private static final String LAYER_TAG = "user_insights_layer";
     private static final String HIDDEN_BUTTON_TAG = "user_insights_hidden_button";
     private static final String INLINE_TAG = "user_insights_inline";
-    private static final String ROW_TAG_PREFIX = "user_insights_row:";
     private static final int MAX_ROWS = 30;
 
     /** Border/text colours of the 1st, 2nd and 3rd pill. */
     static final int[] PILL_COLORS = {0xFFE8834A, 0xFFA77BF3, 0xFFE0709A};
     private static final int FULL_HISTORY_COLOR = 0xFF9A9DA3;
     private static final int PILL_FILL = 0xE60E0F12;
+    private static final int LOADING_COLOR = 0xFF5C6066;
+    private static TextPaint headerPaint;
+
+    /** Tag of a pill row: whose row it is and what it shows. */
+    private static final class RowTag {
+        String user = "";
+        String signature = "";
+        boolean assigned;
+    }
 
     private OverlayManager() {
     }
@@ -74,6 +82,44 @@ final class OverlayManager {
         }
     }
 
+    /** Moves the pills (and the hidden-profile button) by dy pixels, following the content while it scrolls. */
+    static void shiftRows(Activity activity, float dy) {
+        if (dy == 0f) {
+            return;
+        }
+        FrameLayout layer = layer(activity, false);
+        if (layer == null) {
+            return;
+        }
+        for (int i = 0; i < layer.getChildCount(); i++) {
+            View child = layer.getChildAt(i);
+            if (child.getVisibility() == View.VISIBLE && (isRow(child) || HIDDEN_BUTTON_TAG.equals(child.getTag()))) {
+                child.animate().cancel();
+                child.setTranslationY(child.getTranslationY() + dy);
+            }
+        }
+    }
+
+    /** True if (x, y), in window coordinates, is on one of our visible views. */
+    static boolean isOnOverlay(Activity activity, float x, float y) {
+        FrameLayout layer = layer(activity, false);
+        if (layer == null || layer.getAlpha() == 0f) {
+            return false;
+        }
+        Rect hit = new Rect();
+        for (int i = 0; i < layer.getChildCount(); i++) {
+            View child = layer.getChildAt(i);
+            if (child.getVisibility() != View.VISIBLE) {
+                continue;
+            }
+            child.getHitRect(hit);
+            if (hit.contains((int) x, (int) y)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static void clear(Activity activity) {
         FrameLayout layer = layer(activity, false);
         if (layer == null) {
@@ -105,8 +151,8 @@ final class OverlayManager {
         int layerWidth = layer.getWidth();
         int layerHeight = layer.getHeight();
         if (layerWidth <= 0 || layerHeight <= 0) {
-            // The layer was just added and is not laid out yet.
-            InsightsAccessibilityService.requestScan(150);
+            // The layer was just added and is not laid out yet: scan again on the next frame.
+            layer.post(() -> InsightsAccessibilityService.requestScan(0));
             return;
         }
 
@@ -114,20 +160,27 @@ final class OverlayManager {
         renderHiddenButton(activity, layer, result, origin, layerWidth, layerHeight, inlineShown);
         renderRows(activity, layer, result, origin, layerWidth, layerHeight, inlineShown);
 
-        if (layer.getAlpha() < 1f) {
-            layer.animate().alpha(1f).setDuration(120).start();
-        }
+        layer.animate().cancel();
+        layer.setAlpha(1f);
     }
 
     // Pills.
 
     private static void renderRows(Activity activity, FrameLayout layer, ScreenScanner.Result result,
                                    int[] origin, int layerWidth, int layerHeight, boolean inlineShown) {
-        int used = 0;
         boolean badges = Prefs.badgesEnabled();
         int wanted = Prefs.badgeCount();
         int inlineTop = inlineShown ? (int) layer.findViewWithTag(INLINE_TAG).getTranslationY() : Integer.MAX_VALUE;
 
+        // Rows not claimed by a name on screen in this pass are hidden at the end.
+        for (int i = 0; i < layer.getChildCount(); i++) {
+            View child = layer.getChildAt(i);
+            if (isRow(child)) {
+                ((RowTag) child.getTag()).assigned = false;
+            }
+        }
+
+        int used = 0;
         for (ScreenScanner.Hit hit : result.hits) {
             if (used >= MAX_ROWS) {
                 break;
@@ -140,18 +193,17 @@ final class OverlayManager {
             }
 
             List<ArcticShift.SubCount> subs = Collections.emptyList();
+            boolean loading = false;
             if (badges) {
                 List<ArcticShift.SubCount> cached = ArcticShift.cachedTopSubs(hit.user);
                 if (cached == null) {
                     ArcticShift.requestTopSubs(hit.user);
-                    if (!fullHistory) {
-                        continue;
-                    }
+                    loading = ArcticShift.isLoading(hit.user);
                 } else {
                     subs = cached;
                 }
             }
-            if (subs.isEmpty() && !fullHistory) {
+            if (subs.isEmpty() && !fullHistory && !loading) {
                 continue;
             }
 
@@ -160,9 +212,10 @@ final class OverlayManager {
             if (local.bottom <= 0 || local.top >= layerHeight || local.top >= inlineTop) {
                 continue;
             }
-            LinearLayout row = rowAt(layer, used);
-            bindRow(activity, row, hit.user, subs, badges ? wanted : 0, fullHistory);
-            if (positionRow(activity, row, local, anchorRight(activity, hit, local), hit.merged, layerWidth)) {
+            LinearLayout row = rowFor(layer, hit.user);
+            boolean wasVisible = row.getVisibility() == View.VISIBLE;
+            bindRow(activity, row, hit.user, subs, badges ? wanted : 0, fullHistory, loading);
+            if (positionRow(activity, row, local, anchorRight(activity, hit, local), hit.merged, layerWidth, wasVisible)) {
                 row.setVisibility(View.VISIBLE);
                 used++;
             } else {
@@ -170,22 +223,16 @@ final class OverlayManager {
             }
         }
 
-        // Hide unused rows.
-        int rowIndex = 0;
         for (int i = 0; i < layer.getChildCount(); i++) {
             View child = layer.getChildAt(i);
-            if (isRow(child)) {
-                if (rowIndex >= used) {
-                    child.setVisibility(View.GONE);
-                }
-                rowIndex++;
+            if (isRow(child) && !((RowTag) child.getTag()).assigned) {
+                child.setVisibility(View.GONE);
             }
         }
     }
 
     private static boolean isRow(View view) {
-        Object tag = view.getTag();
-        return tag instanceof String && ((String) tag).startsWith(ROW_TAG_PREFIX);
+        return view.getTag() instanceof RowTag;
     }
 
     /**
@@ -196,7 +243,10 @@ final class OverlayManager {
         if (hit.merged || hit.headerText == null) {
             return local.right;
         }
-        TextPaint paint = new TextPaint();
+        if (headerPaint == null) {
+            headerPaint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+        }
+        TextPaint paint = headerPaint;
         paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 14,
                 context.getResources().getDisplayMetrics()));
         int textWidth = (int) Math.ceil(paint.measureText(hit.headerText.split("\n")[0]));
@@ -206,42 +256,68 @@ final class OverlayManager {
         return local.right;
     }
 
-    private static LinearLayout rowAt(FrameLayout layer, int index) {
-        int rowIndex = 0;
+    /**
+     * The row for a user: the one that showed this user before (so it glides into place instead
+     * of jumping), else a free one, else a new one.
+     */
+    private static LinearLayout rowFor(FrameLayout layer, String user) {
+        LinearLayout free = null;
         for (int i = 0; i < layer.getChildCount(); i++) {
             View child = layer.getChildAt(i);
-            if (isRow(child)) {
-                if (rowIndex == index) {
-                    return (LinearLayout) child;
-                }
-                rowIndex++;
+            if (!isRow(child)) {
+                continue;
+            }
+            RowTag tag = (RowTag) child.getTag();
+            if (tag.assigned) {
+                continue;
+            }
+            if (tag.user.equalsIgnoreCase(user) && child.getVisibility() == View.VISIBLE) {
+                tag.assigned = true;
+                return (LinearLayout) child;
+            }
+            if (free == null) {
+                free = (LinearLayout) child;
             }
         }
-        LinearLayout row = new LinearLayout(layer.getContext());
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setTag(ROW_TAG_PREFIX);
-        layer.addView(row, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout row = free;
+        if (row == null) {
+            row = new LinearLayout(layer.getContext());
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setTag(new RowTag());
+            row.setVisibility(View.GONE);
+            layer.addView(row, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            // A row of another user: it must not animate from that user's place.
+            row.setVisibility(View.GONE);
+        }
+        ((RowTag) row.getTag()).assigned = true;
         return row;
     }
 
     private static void bindRow(final Activity activity, LinearLayout row, final String user,
-                                List<ArcticShift.SubCount> subs, int wanted, boolean fullHistory) {
+                                List<ArcticShift.SubCount> subs, int wanted, boolean fullHistory, boolean loading) {
         int count = Math.min(wanted, subs.size());
-        StringBuilder signature = new StringBuilder(ROW_TAG_PREFIX).append(user).append('|');
+        StringBuilder signature = new StringBuilder(user).append('|');
         for (int i = 0; i < count; i++) {
             signature.append(subs.get(i).subreddit).append(':').append(subs.get(i).count).append(',');
         }
-        signature.append(fullHistory);
+        signature.append(fullHistory).append(loading);
         String key = signature.toString();
-        if (key.equals(row.getTag())) {
+        RowTag tag = (RowTag) row.getTag();
+        tag.user = user;
+        if (key.equals(tag.signature)) {
             return;
         }
-        row.setTag(key);
+        tag.signature = key;
         row.removeAllViews();
 
         int gap = Ui.dp(activity, 4);
+        if (loading && count == 0) {
+            // Shown at once while the top subreddits load, so the row never pops in late.
+            addPill(row, pill(activity, "· · ·", LOADING_COLOR), 0);
+        }
         for (int i = 0; i < count; i++) {
             final ArcticShift.SubCount sub = subs.get(i);
             TextView pill = pill(activity, "r/" + sub.subreddit + " · " + Ui.formatCount(sub.count),
@@ -260,7 +336,7 @@ final class OverlayManager {
                 UserInsights.openSettings(activity);
                 return true;
             });
-            addPill(row, pill, count > 0 ? gap : 0);
+            addPill(row, pill, row.getChildCount() > 0 ? gap : 0);
         }
     }
 
@@ -295,10 +371,11 @@ final class OverlayManager {
     /**
      * Places a row on the name's line, right after the name and time, dropping pills that do not fit.
      *
+     * @param wasVisible If the row already showed this user: small corrections glide instead of jump.
      * @return false if not even one pill fits.
      */
     private static boolean positionRow(Context context, LinearLayout row, Rect name, int anchorRight,
-                                       boolean merged, int layerWidth) {
+                                       boolean merged, int layerWidth, boolean wasVisible) {
         int margin = Ui.dp(context, 8);
         int gap = Ui.dp(context, 8);
         int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
@@ -309,8 +386,7 @@ final class OverlayManager {
                 return false;
             }
             row.measure(unspecified, unspecified);
-            row.setTranslationX(name.right - margin - row.getMeasuredWidth());
-            row.setTranslationY(name.top + Ui.dp(context, 4));
+            moveTo(context, row, name.right - margin - row.getMeasuredWidth(), name.top + Ui.dp(context, 4), wasVisible);
             return true;
         }
 
@@ -319,8 +395,7 @@ final class OverlayManager {
         int x = anchorRight + gap;
         if (fitPills(row, layerWidth - margin - x)) {
             row.measure(unspecified, unspecified);
-            row.setTranslationX(x);
-            row.setTranslationY(name.top + (lineHeight - row.getMeasuredHeight()) / 2f);
+            moveTo(context, row, x, name.top + (lineHeight - row.getMeasuredHeight()) / 2f, wasVisible);
             return true;
         }
         // No room on the line at all: just below the name.
@@ -328,9 +403,28 @@ final class OverlayManager {
             return false;
         }
         row.measure(unspecified, unspecified);
-        row.setTranslationX(name.left);
-        row.setTranslationY(name.bottom + Ui.dp(context, 2));
+        moveTo(context, row, name.left, name.bottom + Ui.dp(context, 2), wasVisible);
         return true;
+    }
+
+    private static void moveTo(Context context, View view, float x, float y, boolean wasVisible) {
+        if (wasVisible && ScrollTracker.isGestureActive()) {
+            // Already moving with the finger; scan positions can be a frame behind, so leave it.
+            return;
+        }
+        float dx = Math.abs(view.getTranslationX() - x);
+        float dy = Math.abs(view.getTranslationY() - y);
+        if (dx < 1f && dy < 1f) {
+            return;
+        }
+        view.animate().cancel();
+        int limit = Ui.dp(context, 160);
+        if (wasVisible && dx < limit && dy < limit) {
+            view.animate().translationX(x).translationY(y).setDuration(90).start();
+        } else {
+            view.setTranslationX(x);
+            view.setTranslationY(y);
+        }
     }
 
     /** Hides pills from the end until the row fits; false if none fits. */

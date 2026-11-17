@@ -38,7 +38,10 @@ final class ArcticShift {
     private static final long CACHE_TTL_MS = 3L * 24 * 60 * 60 * 1000;      // 3 days
     private static final long EMPTY_TTL_MS = 24L * 60 * 60 * 1000;          // 1 day for users with no data
     private static final long RETRY_AFTER_ERROR_MS = 60L * 1000;
-    private static final int MAX_IN_FLIGHT = 10;
+    /** Requests for top subreddits that run at the same time. */
+    private static final int MAX_CONCURRENT = 5;
+    private static final int MAX_PENDING = 60;
+    private static final long PAGE_CACHE_TTL_MS = 10L * 60 * 1000;
     private static final int MAX_DISK_ENTRIES = 1500;
 
     static final class SubCount {
@@ -69,7 +72,7 @@ final class ArcticShift {
         void onResult(T result, String error);
     }
 
-    private static final ExecutorService POOL = Executors.newFixedThreadPool(3);
+    private static final ExecutorService POOL = Executors.newFixedThreadPool(6);
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private static final Map<String, List<SubCount>> memCache = new LinkedHashMap<String, List<SubCount>>(64, 0.75f, true) {
@@ -79,6 +82,15 @@ final class ArcticShift {
         }
     };
     private static final Set<String> inFlight = new HashSet<>();
+    /** Users waiting for a request slot, newest first (the ones just scrolled into view). */
+    private static final java.util.ArrayDeque<String[]> pending = new java.util.ArrayDeque<>();
+    /** Archive pages and top-subreddit lists, so reopening a profile is instant. */
+    private static final Map<String, Object[]> pageCache = new LinkedHashMap<String, Object[]>(32, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Object[]> eldest) {
+            return size() > 60;
+        }
+    };
     private static final Map<String, Long> failedAt = new HashMap<>();
 
     private static volatile long pauseUntilMs;
@@ -138,48 +150,83 @@ final class ArcticShift {
     }
 
     /**
+     * True while a user's top subreddits are being loaded or waiting to load
+     * (false after a recent failure, so no placeholder stays forever).
+     */
+    static boolean isLoading(String user) {
+        String key = cacheKey(user);
+        if (memCache.containsKey(key)) {
+            return false;
+        }
+        Long failed = failedAt.get(key);
+        return failed == null || System.currentTimeMillis() - failed >= RETRY_AFTER_ERROR_MS;
+    }
+
+    /**
      * Starts loading a user's top subreddits in the background if needed.
      * When done, the data-changed listener is called so the screen is scanned again.
      * Main thread only.
      */
     static void requestTopSubs(final String user) {
         final String key = cacheKey(user);
-        final String window = Prefs.timeWindow();
-        if (memCache.containsKey(key) || inFlight.contains(key) || inFlight.size() >= MAX_IN_FLIGHT) {
+        if (memCache.containsKey(key) || inFlight.contains(key)) {
             return;
         }
         Long failed = failedAt.get(key);
         if (failed != null && System.currentTimeMillis() - failed < RETRY_AFTER_ERROR_MS) {
             return;
         }
-        if (System.currentTimeMillis() < pauseUntilMs) {
-            return;
-        }
-        inFlight.add(key);
-
-        POOL.execute(() -> {
-            List<SubCount> result = null;
-            try {
-                result = fetchTopSubs(user, 10, window);
-            } catch (Exception e) {
-                Log.w(UserInsights.TAG, "Top subreddits failed for " + user + ": " + e.getMessage());
+        // Move to the front: the newest names on screen load first.
+        java.util.Iterator<String[]> iterator = pending.iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next()[0].equals(key)) {
+                iterator.remove();
             }
-            final List<SubCount> finalResult = result;
-            MAIN.post(() -> {
-                inFlight.remove(key);
-                if (finalResult == null) {
-                    failedAt.put(key, System.currentTimeMillis());
-                    return;
+        }
+        pending.addFirst(new String[]{key, user, Prefs.timeWindow()});
+        while (pending.size() > MAX_PENDING) {
+            pending.removeLast();
+        }
+        pump();
+    }
+
+    private static void pump() {
+        while (inFlight.size() < MAX_CONCURRENT && !pending.isEmpty()
+                && System.currentTimeMillis() >= pauseUntilMs) {
+            final String[] request = pending.removeFirst();
+            final String key = request[0];
+            if (memCache.containsKey(key) || inFlight.contains(key)) {
+                continue;
+            }
+            inFlight.add(key);
+            POOL.execute(() -> {
+                List<SubCount> result = null;
+                try {
+                    result = fetchTopSubs(request[1], 10, request[2]);
+                } catch (Exception e) {
+                    Log.w(UserInsights.TAG, "Top subreddits failed for " + request[1] + ": " + e.getMessage());
                 }
-                failedAt.remove(key);
-                memCache.put(key, finalResult);
-                saveToDisk(key, finalResult);
-                Runnable listener = onDataChanged;
-                if (listener != null) {
-                    listener.run();
-                }
+                final List<SubCount> finalResult = result;
+                MAIN.post(() -> {
+                    inFlight.remove(key);
+                    if (finalResult == null) {
+                        failedAt.put(key, System.currentTimeMillis());
+                    } else {
+                        failedAt.remove(key);
+                        memCache.put(key, finalResult);
+                        saveToDisk(key, finalResult);
+                    }
+                    Runnable listener = onDataChanged;
+                    if (listener != null) {
+                        listener.run();
+                    }
+                    pump();
+                });
             });
-        });
+        }
+        if (!pending.isEmpty() && inFlight.isEmpty() && System.currentTimeMillis() < pauseUntilMs) {
+            MAIN.postDelayed(ArcticShift::pump, pauseUntilMs - System.currentTimeMillis() + 50);
+        }
     }
 
     private static void saveToDisk(String key, List<SubCount> list) {
@@ -208,6 +255,7 @@ final class ArcticShift {
     static void clearCache() {
         memCache.clear();
         failedAt.clear();
+        pageCache.clear();
         SharedPreferences disk = disk();
         if (disk != null) {
             disk.edit().clear().apply();
@@ -215,19 +263,14 @@ final class ArcticShift {
     }
 
     /**
-     * Loads a user's most active subreddits without caching (used by the archive screen).
+     * Loads a user's most active subreddits for the archive screen (cached for 10 minutes).
      */
+    @SuppressWarnings("unchecked")
     static void topSubs(final String user, final int limit, final Callback<List<SubCount>> callback) {
         final String window = Prefs.timeWindow();
-        POOL.execute(() -> {
-            try {
-                List<SubCount> result = fetchTopSubs(user, limit, window);
-                MAIN.post(() -> callback.onResult(result, null));
-            } catch (Exception e) {
-                final String message = e.getMessage() == null ? "Network error" : e.getMessage();
-                MAIN.post(() -> callback.onResult(null, message));
-            }
-        });
+        String key = "subs|" + user.toLowerCase() + "|" + limit + "|" + window;
+        loadPage(key, () -> fetchTopSubs(user, limit, window), (result, error) ->
+                callback.onResult((List<SubCount>) result, error));
     }
 
     /**
@@ -236,35 +279,105 @@ final class ArcticShift {
      * @param subreddit  Only this subreddit, or null for all.
      * @param beforeUtc  Only items older than this (seconds), or 0 for the newest.
      */
+    @SuppressWarnings("unchecked")
     static void search(final boolean posts, final String user, final String subreddit,
                        final long beforeUtc, final Callback<List<Item>> callback) {
+        String key = (posts ? "posts|" : "comments|") + user.toLowerCase() + "|"
+                + (subreddit == null ? "" : subreddit.toLowerCase()) + "|" + beforeUtc;
+        loadPage(key, () -> {
+            Uri.Builder builder = Uri.parse(BASE).buildUpon()
+                    .appendEncodedPath(posts ? "api/posts/search" : "api/comments/search")
+                    .appendQueryParameter("author", user)
+                    .appendQueryParameter("limit", "50")
+                    .appendQueryParameter("sort", "desc");
+            if (subreddit != null && !subreddit.isEmpty()) {
+                builder.appendQueryParameter("subreddit", subreddit);
+            }
+            if (beforeUtc > 0) {
+                builder.appendQueryParameter("before", String.valueOf(beforeUtc));
+            }
+            JSONArray data = getData(builder.build().toString());
+            List<Item> items = new ArrayList<>();
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject object = data.optJSONObject(i);
+                if (object != null) {
+                    items.add(parseItem(object, posts));
+                }
+            }
+            return items;
+        }, (result, error) -> callback.onResult((List<Item>) result, error));
+    }
+
+    private interface Fetch {
+        Object run() throws Exception;
+    }
+
+    /** Requests waiting for a page that is already being loaded. */
+    private static final Map<String, List<Callback<Object>>> pageWaiters = new HashMap<>();
+
+    /**
+     * Returns a cached page at once, joins a request that is already running for it,
+     * or starts one. Callbacks run on the main thread. Main thread only.
+     */
+    private static void loadPage(final String key, final Fetch fetch, Callback<Object> callback) {
+        Object cached = cachedPage(key);
+        if (cached != null) {
+            callback.onResult(cached, null);
+            return;
+        }
+        List<Callback<Object>> waiters = pageWaiters.get(key);
+        if (waiters != null) {
+            waiters.add(callback);
+            return;
+        }
+        waiters = new ArrayList<>();
+        waiters.add(callback);
+        pageWaiters.put(key, waiters);
+
         POOL.execute(() -> {
+            Object result = null;
+            String error = null;
             try {
-                Uri.Builder builder = Uri.parse(BASE).buildUpon()
-                        .appendEncodedPath(posts ? "api/posts/search" : "api/comments/search")
-                        .appendQueryParameter("author", user)
-                        .appendQueryParameter("limit", "50")
-                        .appendQueryParameter("sort", "desc");
-                if (subreddit != null && !subreddit.isEmpty()) {
-                    builder.appendQueryParameter("subreddit", subreddit);
+                result = fetch.run();
+            } catch (Exception e) {
+                error = e.getMessage() == null ? "Network error" : e.getMessage();
+            }
+            final Object finalResult = result;
+            final String finalError = error;
+            MAIN.post(() -> {
+                if (finalResult != null) {
+                    pageCache.put(key, new Object[]{System.currentTimeMillis(), finalResult});
                 }
-                if (beforeUtc > 0) {
-                    builder.appendQueryParameter("before", String.valueOf(beforeUtc));
-                }
-                JSONArray data = getData(builder.build().toString());
-                List<Item> items = new ArrayList<>();
-                for (int i = 0; i < data.length(); i++) {
-                    JSONObject object = data.optJSONObject(i);
-                    if (object != null) {
-                        items.add(parseItem(object, posts));
+                List<Callback<Object>> done = pageWaiters.remove(key);
+                if (done != null) {
+                    for (Callback<Object> waiter : done) {
+                        waiter.onResult(finalResult, finalResult == null ? finalError : null);
                     }
                 }
-                MAIN.post(() -> callback.onResult(items, null));
-            } catch (Exception e) {
-                final String message = e.getMessage() == null ? "Network error" : e.getMessage();
-                MAIN.post(() -> callback.onResult(null, message));
-            }
+            });
         });
+    }
+
+    /** Main thread only. */
+    private static Object cachedPage(String key) {
+        Object[] entry = pageCache.get(key);
+        if (entry == null) {
+            return null;
+        }
+        if (System.currentTimeMillis() - (Long) entry[0] > PAGE_CACHE_TTL_MS) {
+            pageCache.remove(key);
+            return null;
+        }
+        return entry[1];
+    }
+
+    /**
+     * Loads the first archive page and top subreddits of a user in the background,
+     * so the hidden-activity view shows them as soon as it opens.
+     */
+    static void prefetchArchive(String user) {
+        search(false, user, null, 0, (result, error) -> { });
+        topSubs(user, 15, (result, error) -> { });
     }
 
     private static List<SubCount> fetchTopSubs(String user, int limit, String window) throws IOException {
