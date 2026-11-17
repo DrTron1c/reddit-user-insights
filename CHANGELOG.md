@@ -1,3 +1,9 @@
+## [1.4.1](https://github.com/DrTron1c/reddit-user-insights/compare/v1.4.0...v1.4.1) (2026-11-17)
+
+### 🐛 Bug Fixes
+
+* Crash when drawing pills in comments ([b889e25](https://github.com/DrTron1c/reddit-user-insights/commit/b889e25f264c5792c793aee66bd6d479a8698f5f))
+
 ## [1.4.0](https://github.com/DrTron1c/reddit-user-insights/compare/v1.3.0...v1.4.0) (2026-11-17)
 
 ### ✨ New Features
