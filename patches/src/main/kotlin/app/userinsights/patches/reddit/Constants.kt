@@ -16,9 +16,10 @@ internal object Constants {
         apkFileType = ApkFileType.APKM,
         appIconColor = 0xFF4500,
         targets = listOf(
+            // "version = null" without isExperimental: works with any Reddit version,
+            // so Morphe Manager always shows the patch, whatever version is being patched.
             AppTarget(
-                version = null,
-                isExperimental = true
+                version = null
             ),
             AppTarget(
                 version = "2026.46.0",
